@@ -3,8 +3,8 @@
 财务数据获取模块
 
 数据源优先级：
-1. 雪球 API（PE、PB、价格等）
-2. AkShare（ROE、毛利率等）
+1. 雪球 API（PE、PB、ROE计算、K线等）
+2. AkShare（毛利率、净利率等补充）
 """
 
 import os
@@ -30,13 +30,15 @@ class FinancialData:
     market_cap: float = 0.0  # 总市值
     high52w: float = 0.0  # 52周最高
     low52w: float = 0.0  # 52周最低
-    # 盈利能力（AkShare）
-    roe: float = 0.0  # 净资产收益率
+    # 盈利指标（雪球 API）
+    eps: float = 0.0  # 每股收益
+    profit: float = 0.0  # 净利润
+    shareholder_funds: float = 0.0  # 股东权益
+    roe: float = 0.0  # ROE（计算：净利润/股东权益）
+    # 补充指标（AkShare）
     gross_margin: float = 0.0  # 毛利率
     net_margin: float = 0.0  # 净利率
-    # 成长性（AkShare）
-    revenue_growth: float = 0.0  # 营收增速
-    profit_growth: float = 0.0  # 利润增速
+    akshare_roe: float = 0.0  # AkShare ROE
     # 数据来源
     source: str = ""
     fetch_time: str = ""
@@ -102,7 +104,7 @@ class FinancialDataFetcher:
         """
         result = FinancialData(symbol=symbol)
         
-        # 1. 从雪球 API 获取 PE/PB 等数据
+        # 1. 从雪球 API 获取主要数据
         if cookies:
             self.xueqiu_api.set_cookies(cookies)
             quote = self.xueqiu_api.fetch_quote(symbol)
@@ -116,10 +118,18 @@ class FinancialDataFetcher:
                 result.market_cap = float(quote.get('market_capital', 0) or 0)
                 result.high52w = float(quote.get('high52w', 0) or 0)
                 result.low52w = float(quote.get('low52w', 0) or 0)
+                result.eps = float(quote.get('eps', 0) or 0)
+                result.profit = float(quote.get('profit', 0) or 0)
+                result.shareholder_funds = float(quote.get('shareholder_funds', 0) or 0)
+                
+                # 计算 ROE
+                if result.profit and result.shareholder_funds:
+                    result.roe = (result.profit / result.shareholder_funds) * 100
+                
                 result.source = '雪球'
-                print(f"  雪球数据: PE={result.pe_ttm:.1f}, PB={result.pb:.1f}")
+                print(f"  雪球数据: PE={result.pe_ttm:.1f}, PB={result.pb:.1f}, ROE={result.roe:.1f}%")
         
-        # 2. 从 AkShare 获取 ROE、毛利率等
+        # 2. 从 AkShare 获取毛利率等补充数据
         if self.akshare_available:
             try:
                 import akshare as ak
@@ -129,11 +139,11 @@ class FinancialDataFetcher:
                     df = ak.stock_financial_us_analysis_indicator_em(symbol=symbol, indicator="年报")
                     if df is not None and not df.empty:
                         latest = df.iloc[0]
-                        result.roe = float(latest.get('ROE_AVG', 0) or 0)
                         result.gross_margin = float(latest.get('GROSS_PROFIT_RATIO', 0) or 0)
                         result.net_margin = float(latest.get('NET_PROFIT_RATIO', 0) or 0)
+                        result.akshare_roe = float(latest.get('ROE_AVG', 0) or 0)
                         result.source += '+AkShare'
-                        print(f"  AkShare数据: ROE={result.roe:.1f}%, 毛利率={result.gross_margin:.1f}%")
+                        print(f"  AkShare数据: 毛利率={result.gross_margin:.1f}%, 净利率={result.net_margin:.1f}%")
             except Exception as e:
                 print(f"  AkShare 获取失败: {e}")
         

@@ -47,4 +47,6 @@ logs/*.log
 # 临时文件
 *.tmp
 *.temp
-.DS_Store
+.DS_Storeconfig/xueqiu_credentials.yaml
+config/xueqiu_credentials.yaml
+config/xueqiu_credentials.yaml
