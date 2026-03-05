@@ -1,0 +1,25 @@
+# 雪球分析 Skill 配置
+
+# GLM-5 API 配置
+bailian:
+  api_key: "${BAILIAN_API_KEY}"
+  model: "glm-5"
+  max_tokens: 8000
+
+# 爬虫配置
+crawler:
+  headless: true
+  delay_min: 2
+  delay_max: 5
+  timeout: 30000
+
+# 存储配置
+storage:
+  data_dir: "data"
+  logs_dir: "logs"
+
+# 分析配置
+analysis:
+  max_discussions: 10
+  max_news: 10
+  max_articles: 5
