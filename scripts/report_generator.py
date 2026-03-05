@@ -5,6 +5,7 @@
 功能：
 - 调用 GLM-5 分析股票数据
 - 生成结构化投资分析报告
+- 按照需求文档模板格式输出
 """
 
 import os
@@ -14,6 +15,19 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from typing import Dict, List, Optional
+
+# 导入模板
+sys.path.insert(0, os.path.dirname(__file__))
+from report_template import (
+    REPORT_TEMPLATE,
+    format_articles_table,
+    format_discussions_table,
+    format_news_table,
+    format_financial_table,
+    format_key_data_table,
+    format_reference_summary,
+    build_analysis_prompt
+)
 
 
 class GLM5Analyzer:
@@ -83,22 +97,24 @@ class ReportGenerator:
         discussions = stock_data.get('discussions', [])
         news = stock_data.get('news', [])
         notices = stock_data.get('notices', [])
-        articles = stock_data.get('articles', [])  # 新增：专栏文章
+        articles = stock_data.get('articles', [])  # 专栏文章
+        financial_data = stock_data.get('financial_data', {})  # 财务数据
         
         # 构建 prompt
-        prompt = self._build_prompt(symbol, name, price, discussions, news, articles)
+        prompt = self._build_prompt(symbol, name, price, discussions, news, articles, financial_data)
         
         # 调用 GLM-5 分析
         print(f"正在调用 GLM-5 分析 {symbol}...")
         analysis = self.analyzer.analyze(prompt, max_tokens=4000)
         
         # 构建完整报告
-        report = self._format_report(symbol, name, price, discussions, news, notices, articles, analysis)
+        report = self._format_report(symbol, name, price, discussions, news, notices, articles, financial_data, analysis)
         
         return report
     
     def _build_prompt(self, symbol: str, name: str, price: str, 
-                      discussions: list, news: list, articles: list = None) -> str:
+                      discussions: list, news: list, articles: list = None, 
+                      financial_data: dict = None) -> str:
         """构建分析 prompt - 严格按照需求文档模板"""
         
         # 讨论内容 - 表格格式
@@ -132,6 +148,24 @@ class ReportGenerator:
 
 ---
 
+"""
+        
+        # 财务数据（新增）
+        financial_text = ""
+        if financial_data and financial_data.get('roe'):
+            financial_text = f"""
+## 财务数据（AkShare）
+
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| ROE | {financial_data.get('roe', 0):.1f}% | 净资产收益率 |
+| 毛利率 | {financial_data.get('gross_margin', 0):.1f}% | 销售毛利率 |
+| 净利率 | {financial_data.get('net_margin', 0):.1f}% | 销售净利率 |
+| 营收增速 | {financial_data.get('revenue_growth', 0):.1f}% | 同比增长 |
+| 利润增速 | {financial_data.get('profit_growth', 0):.1f}% | 同比增长 |
+| PE | {financial_data.get('pe', 0):.1f} | 市盈率 |
+
+**数据来源**: {financial_data.get('source', 'AkShare')}
 """
         
         prompt = f"""
@@ -213,7 +247,7 @@ class ReportGenerator:
 
 ## 四、财务数据
 
-> 注：暂未接入财务数据源，建议结合财报分析
+{financial_text if financial_text else '> 注：暂未接入财务数据源，建议结合财报分析'}
 
 ---
 
@@ -246,24 +280,67 @@ class ReportGenerator:
     
     def _format_report(self, symbol: str, name: str, price: str,
                        discussions: list, news: list, notices: list,
-                       articles: list, analysis: str) -> str:
-        """格式化完整报告 - 直接返回 GLM-5 按模板生成的分析"""
-        # GLM-5 已经按照模板格式输出了，直接使用
-        # 只在末尾添加数据来源说明
-        report = analysis
+                       articles: list, financial_data: dict, analysis: str) -> str:
+        """格式化完整报告 - 带清晰引用清单"""
         
-        # 添加数据来源
-        report += f"""
+        # 格式化各部分表格
+        articles_table = format_articles_table(articles)
+        discussions_table = format_discussions_table(discussions)
+        news_table = format_news_table(news)
+        financial_table = format_financial_table(financial_data)
+        key_data_table = format_key_data_table(price, financial_data)
+        reference_summary = format_reference_summary(articles, discussions)
+        
+        # 组装报告
+        report = f'''# {name or symbol}({symbol})投资价值分析报告
+
+**分析日期：{datetime.now().strftime('%Y-%m-%d')}**
+**分析模型：智谱 GLM-5**
 
 ---
 
-## 📋 数据来源
+## 📚 数据来源
 
-- 雪球讨论: {len(discussions)} 条
-- 专栏文章: {len(articles)} 篇
-- 相关资讯: {len(news)} 条
-- 公告链接: {len(notices)} 条
-"""
+本报告基于以下雪球专栏文章和讨论进行分析：
+
+### 专栏文章
+
+{articles_table}
+
+### 热门讨论
+
+{discussions_table}
+
+### 相关资讯
+
+{news_table}
+
+---
+
+## 📊 GLM-5 深度分析
+
+{analysis}
+
+---
+
+## 📋 财务数据汇总
+
+{financial_table}
+
+---
+
+## 📚 原文引用汇总
+
+{reference_summary}
+
+---
+
+**风险提示：本报告仅供参考，不构成投资建议。投资有风险，决策需谨慎。**
+
+*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}*
+*分析模型：智谱 GLM-5*
+*数据来源：雪球、AkShare*
+'''
         return report
 
 

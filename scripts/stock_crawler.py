@@ -54,6 +54,7 @@ class News:
     title: str
     time: str
     source: str = ""
+    link: str = ""  # 资讯链接
 
 
 @dataclass
@@ -75,6 +76,7 @@ class StockInfo:
     news: List[News] = None
     notices: List[Notice] = None
     articles: List[Article] = None  # 新增：专栏文章
+    financial_data: dict = None  # 新增：财务数据
     
     def __post_init__(self):
         if self.discussions is None:
@@ -85,6 +87,8 @@ class StockInfo:
             self.notices = []
         if self.articles is None:
             self.articles = []
+        if self.financial_data is None:
+            self.financial_data = {}
 
 
 class XueqiuStockCrawler:
@@ -235,6 +239,20 @@ class XueqiuStockCrawler:
                     stock_info.price = price_elem.inner_text().strip()[:50]
                     self.logger.info(f"价格信息: {stock_info.price}")
                 
+                # 3. 获取财务数据（新增）
+                self.logger.info("获取财务数据...")
+                try:
+                    from financial_fetcher import FinancialDataFetcher
+                    fetcher = FinancialDataFetcher()
+                    # 传递 cookies 给雪球 API
+                    cookies = context.cookies()
+                    financial_data = fetcher.fetch(symbol, cookies)
+                    if financial_data:
+                        stock_info.financial_data = fetcher.to_dict(financial_data)
+                        self.logger.info(f"  财务数据: PE={financial_data.pe_ttm:.1f}, ROE={financial_data.roe:.1f}%")
+                except Exception as e:
+                    self.logger.warning(f"财务数据获取失败: {e}")
+                
                 # 3. 访问讨论页
                 self.logger.info(f"访问讨论页: /S/{symbol}/column")
                 page.goto(f'https://xueqiu.com/S/{symbol}/column', timeout=30000)
@@ -383,11 +401,22 @@ class XueqiuStockCrawler:
                         time_match = re.search(r'(\d+小时前|\d+天前|昨天|\d{2}-\d{2})', text)
                         time_str = time_match.group(1) if time_match else ''
                         
+                        # 获取资讯链接
+                        news_link = ''
+                        link_elems = item.query_selector_all('a')
+                        for link_elem in link_elems:
+                            href = link_elem.get_attribute('href') or ''
+                            # 资讯链接格式：/S/{symbol}/{id} 或外部链接
+                            if re.match(r'/S/\w+/\d+$', href) or href.startswith('http'):
+                                news_link = href if href.startswith('http') else 'https://xueqiu.com' + href
+                                break
+                        
                         if title and len(title) > 5:
                             stock_info.news.append(News(
                                 title=title[:100],
                                 time=time_str,
-                                source='雪球'
+                                source='雪球',
+                                link=news_link
                             ))
                     except Exception as e:
                         self.logger.warning(f"解析资讯失败: {e}")
@@ -426,9 +455,10 @@ class XueqiuStockCrawler:
             'name': stock_info.name,
             'price': stock_info.price,
             'discussions': [asdict(d) for d in stock_info.discussions],
-            'articles': [asdict(a) for a in stock_info.articles],  # 新增
+            'articles': [asdict(a) for a in stock_info.articles],
             'news': [asdict(n) for n in stock_info.news],
             'notices': [asdict(n) for n in stock_info.notices],
+            'financial_data': stock_info.financial_data,  # 新增
             'crawl_time': datetime.now().isoformat()
         }
 
