@@ -83,38 +83,59 @@ class ReportGenerator:
         discussions = stock_data.get('discussions', [])
         news = stock_data.get('news', [])
         notices = stock_data.get('notices', [])
+        articles = stock_data.get('articles', [])  # 新增：专栏文章
         
         # 构建 prompt
-        prompt = self._build_prompt(symbol, name, price, discussions, news)
+        prompt = self._build_prompt(symbol, name, price, discussions, news, articles)
         
         # 调用 GLM-5 分析
         print(f"正在调用 GLM-5 分析 {symbol}...")
         analysis = self.analyzer.analyze(prompt, max_tokens=4000)
         
         # 构建完整报告
-        report = self._format_report(symbol, name, price, discussions, news, notices, analysis)
+        report = self._format_report(symbol, name, price, discussions, news, notices, articles, analysis)
         
         return report
     
     def _build_prompt(self, symbol: str, name: str, price: str, 
-                      discussions: list, news: list) -> str:
-        """构建分析 prompt"""
+                      discussions: list, news: list, articles: list = None) -> str:
+        """构建分析 prompt - 严格按照需求文档模板"""
         
-        # 讨论内容
-        discussion_text = ""
-        for i, d in enumerate(discussions[:5], 1):
-            discussion_text += f"\n### 讨论 {i}\n"
-            discussion_text += f"作者: {d.get('author', '未知')}\n"
-            discussion_text += f"时间: {d.get('time', '')}\n"
-            discussion_text += f"内容: {d.get('content', '')[:300]}\n"
+        # 讨论内容 - 表格格式
+        discussion_table = "| 作者 | 观点摘要 | 时间 |\n|------|----------|------|\n"
+        for d in discussions[:5]:
+            author = d.get('author', '未知')[:15]
+            content = d.get('content', '')[:50].replace('\n', ' ')
+            time_str = d.get('time', '')
+            discussion_table += f"| {author} | {content}... | {time_str} |\n"
         
-        # 资讯内容
-        news_text = ""
-        for i, n in enumerate(news[:5], 1):
-            news_text += f"\n{i}. {n.get('title', '')} ({n.get('time', '')})\n"
+        # 资讯内容 - 表格格式
+        news_table = "| 标题 | 时间 |\n|------|------|\n"
+        for n in news[:5]:
+            title = n.get('title', '')[:40]
+            time_str = n.get('time', '')
+            news_table += f"| {title} | {time_str} |\n"
+        
+        # 文章内容 - 用于深度分析
+        articles_text = ""
+        if articles:
+            for i, a in enumerate(articles[:3], 1):
+                articles_text += f"""
+### 文章 {i}: {a.get('title', '无标题')}
+
+**作者**: {a.get('author', '未知')}  
+**链接**: {a.get('link', '')}  
+**时间**: {a.get('time', '')}
+
+**正文内容**:
+{a.get('content', '')[:2000]}
+
+---
+
+"""
         
         prompt = f"""
-请分析以下股票的投资价值，生成结构化的投资分析报告。
+请分析以下股票的投资价值，**严格按照下面的模板格式输出报告**。
 
 ## 股票基本信息
 - 代码: {symbol}
@@ -122,82 +143,126 @@ class ReportGenerator:
 - 价格信息: {price}
 
 ## 雪球讨论（投资者观点）
-{discussion_text}
+{discussion_table}
+
+## 专栏文章（深度分析）
+{articles_text if articles_text else '暂无专栏文章'}
 
 ## 相关资讯
-{news_text}
+{news_table}
 
-请从以下维度进行分析，以 Markdown 格式输出：
+---
 
-### 一、执行摘要
-- 核心结论（估值判断、投资建议）
-- 关键逻辑（2-3 点）
-- 主要风险
+**请严格按照以下模板格式输出报告，不要改变结构：**
 
-### 二、投资者观点分析
-- 多空观点对比
-- 主要关注点
-- 市场情绪判断
+# {name or symbol}({symbol})投资价值分析报告
 
-### 三、资讯要点
-- 重要新闻摘要
-- 对股价的可能影响
+**分析日期：[日期]**
+**分析模型：智谱 GLM-5**
 
-### 四、综合评估
-- 优势
-- 风险
-- 关注要点
+---
 
-### 五、投资建议
-- 操作建议
-- 仓位建议
-- 止损止盈参考
+## 📊 执行摘要
 
-注意：
-1. 基于提供的信息进行客观分析
-2. 不确定的要明确说明
-3. 在报告末尾添加风险提示
+### 核心结论
+
+**估值判断**：[合理/低估/高估，并说明理由]
+
+**投资建议**：[买入/观望/卖出]，建议仓位 [X]%
+
+**核心逻辑**：
+- 逻辑1：[详细说明]
+- 逻辑2：[详细说明]
+
+**关键风险**：[最大的风险点]
+
+---
+
+## 一、基本信息
+
+| 指标 | 数值 |
+|------|------|
+| 股票代码 | {symbol} |
+| 股票名称 | {name or '-'} |
+| 当前价 | {price or '-'} |
+
+---
+
+## 二、雪球讨论分析
+
+### 2.1 热门讨论（来自股票详情页）
+
+[分析讨论中的主要观点、多空情绪、市场关注点]
+
+### 2.2 深度文章分析
+
+**重要：请引用文章原文内容进行分析，使用以下格式：**
+
+> 📌 **引用自文章《文章标题》**：
+> "{{引用原文关键段落}}"
+
+**分析**：[对该文章内容的分析和解读]
+
+---
+
+## 三、资讯动态
+
+[分析重要新闻及对股价的影响]
+
+---
+
+## 四、财务数据
+
+> 注：暂未接入财务数据源，建议结合财报分析
+
+---
+
+## 五、价格趋势
+
+> 注：暂未接入K线数据源，建议结合技术分析
+
+---
+
+## 六、投资建议
+
+| 操作 | 建议 |
+|------|------|
+| 建仓时机 | [建议] |
+| 仓位控制 | [X]% |
+| 止损线 | [价格或比例] |
+
+---
+
+**风险提示：本报告仅供参考，不构成投资建议。投资有风险，入市需谨慎。**
+
+---
+
+**重要提示**：
+1. 请完全按照上述模板格式输出
+2. 在"深度文章分析"部分，必须引用文章原文内容
+3. 引用格式：> 📌 **引用自文章《标题》**："原文内容"
 """
         return prompt
     
     def _format_report(self, symbol: str, name: str, price: str,
                        discussions: list, news: list, notices: list,
-                       analysis: str) -> str:
-        """格式化完整报告"""
+                       articles: list, analysis: str) -> str:
+        """格式化完整报告 - 直接返回 GLM-5 按模板生成的分析"""
+        # GLM-5 已经按照模板格式输出了，直接使用
+        # 只在末尾添加数据来源说明
+        report = analysis
         
-        report = f"""# {name or symbol} 投资价值分析报告
-
-**分析日期**: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-**分析模型**: 智谱 GLM-5
-**股票代码**: {symbol}
-
----
-
-## 📊 基本信息
-
-| 指标 | 数值 |
-|------|------|
-| 股票名称 | {name or '-'} |
-| 股票代码 | {symbol} |
-| 价格信息 | {price or '-'} |
-
----
-
-## 🤖 GLM-5 深度分析
-
-{analysis}
+        # 添加数据来源
+        report += f"""
 
 ---
 
 ## 📋 数据来源
 
 - 雪球讨论: {len(discussions)} 条
+- 专栏文章: {len(articles)} 篇
 - 相关资讯: {len(news)} 条
 - 公告链接: {len(notices)} 条
-
----
-
-**风险提示**: 本报告仅供参考，不构成投资建议。投资有风险，入市需谨慎。
 """
         return report
 

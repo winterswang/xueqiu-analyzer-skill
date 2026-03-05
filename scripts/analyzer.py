@@ -49,11 +49,13 @@ class XueqiuAnalyzer:
         stock_info = self.crawler.crawl(
             symbol=symbol,
             max_discussions=max_discussions,
-            max_news=max_news
+            max_news=max_news,
+            max_articles=5  # 新增：爬取5篇专栏文章
         )
         stock_data = self.crawler.to_dict(stock_info)
         
         print(f"  ✅ 获取 {len(stock_data['discussions'])} 条讨论")
+        print(f"  ✅ 获取 {len(stock_data.get('articles', []))} 篇文章")
         print(f"  ✅ 获取 {len(stock_data['news'])} 条资讯")
         print(f"  ✅ 获取 {len(stock_data['notices'])} 条公告")
         

@@ -29,6 +29,17 @@ except ImportError:
 
 
 @dataclass
+class Article:
+    """专栏文章"""
+    title: str
+    author: str
+    time: str
+    content: str
+    link: str
+    article_id: str = ""
+
+
+@dataclass
 class Discussion:
     """讨论数据"""
     author: str
@@ -63,6 +74,7 @@ class StockInfo:
     discussions: List[Discussion] = None
     news: List[News] = None
     notices: List[Notice] = None
+    articles: List[Article] = None  # 新增：专栏文章
     
     def __post_init__(self):
         if self.discussions is None:
@@ -71,6 +83,8 @@ class StockInfo:
             self.news = []
         if self.notices is None:
             self.notices = []
+        if self.articles is None:
+            self.articles = []
 
 
 class XueqiuStockCrawler:
@@ -123,6 +137,53 @@ class XueqiuStockCrawler:
         delay = random.uniform(min_sec, max_sec)
         time.sleep(delay)
     
+    def _crawl_article_detail(self, page: Page, url: str) -> Optional[Article]:
+        """爬取文章详情"""
+        try:
+            page.goto(url, timeout=30000)
+            page.wait_for_timeout(2000)
+            
+            # 获取标题
+            title = page.title()
+            if '雪球' in title:
+                title = title.split('-')[0].strip()
+            
+            # 获取作者
+            author_elem = page.query_selector('.article__bd__from a, .user-name, .author-name')
+            author = author_elem.inner_text().strip() if author_elem else ''
+            
+            # 获取时间
+            time_elem = page.query_selector('.article__bd__from .date, .time, .date')
+            time_str = time_elem.inner_text().strip() if time_elem else ''
+            
+            # 获取正文内容
+            content_elem = page.query_selector('.article__bd__detail')
+            if content_elem:
+                content = content_elem.inner_text().strip()
+            else:
+                # 备选选择器
+                content_elem = page.query_selector('.status-content, article')
+                content = content_elem.inner_text().strip() if content_elem else ''
+            
+            # 提取文章ID
+            article_id = ''
+            match = re.search(r'/(\d+)$', url)
+            if match:
+                article_id = match.group(1)
+            
+            return Article(
+                title=title[:100],
+                author=author,
+                time=time_str,
+                content=content[:5000],  # 限制长度
+                link=url,
+                article_id=article_id
+            )
+            
+        except Exception as e:
+            self.logger.warning(f"爬取文章详情失败 {url}: {e}")
+            return None
+    
     def _extract_symbol(self, symbol: str) -> str:
         """提取股票代码"""
         # 去掉可能的前缀
@@ -130,7 +191,7 @@ class XueqiuStockCrawler:
         symbol = re.sub(r'^[A-Z]{1,2}', '', symbol)  # 去掉市场前缀如 SH, SZ, US
         return symbol
     
-    def crawl(self, symbol: str, max_discussions: int = 10, max_news: int = 10) -> StockInfo:
+    def crawl(self, symbol: str, max_discussions: int = 10, max_news: int = 10, max_articles: int = 5) -> StockInfo:
         """
         爬取股票详情页数据
         
@@ -138,6 +199,7 @@ class XueqiuStockCrawler:
             symbol: 股票代码 (如 APP, TCOM, 600519)
             max_discussions: 最大讨论数
             max_news: 最大资讯数
+            max_articles: 最大文章数
             
         Returns:
             StockInfo: 股票信息
@@ -184,7 +246,68 @@ class XueqiuStockCrawler:
                 except:
                     self.logger.warning("等待讨论内容超时")
                 
-                # 解析讨论
+                # ========== 滚动加载更多文章 ==========
+                self.logger.info("滚动加载更多文章...")
+                article_links = []  # 收集文章链接
+                seen_links = set()  # 去重
+                scroll_count = 0
+                max_scrolls = 20  # 最多滚动20次
+                min_content_length = 100  # 最小内容长度（降低阈值）
+                max_articles = 20  # 最多收集20篇文章
+                
+                # 当前日期（用于判断是否在一周内）
+                from datetime import datetime, timedelta
+                one_week_ago = datetime.now() - timedelta(days=7)
+                
+                while scroll_count < max_scrolls and len(article_links) < max_articles:
+                    # 获取当前所有讨论项
+                    items = page.query_selector_all('.timeline__item')
+                    
+                    for item in items:
+                        try:
+                            text = item.inner_text().strip()
+                            content_length = len(text)
+                            
+                            # 获取所有链接，找到文章链接
+                            all_links = item.query_selector_all('a')
+                            article_href = None
+                            
+                            for link_elem in all_links:
+                                href = link_elem.get_attribute('href') or ''
+                                # 检查是否是文章链接格式：/用户ID/文章ID
+                                if re.match(r'/\d+/\d+$', href):
+                                    article_href = href
+                                    break
+                            
+                            if article_href:
+                                full_url = 'https://xueqiu.com' + article_href
+                                
+                                # 检查是否已收集
+                                if full_url not in seen_links:
+                                    # 检查内容长度
+                                    if content_length >= min_content_length:
+                                        seen_links.add(full_url)
+                                        article_links.append({
+                                            'url': full_url,
+                                            'content_preview': text[:200]
+                                        })
+                                        self.logger.info(f"  收集文章 [{len(article_links)}]: {text[:50]}...")
+                        except Exception as e:
+                            self.logger.debug(f"解析讨论项失败: {e}")
+                    
+                    # 检查是否已经足够
+                    if len(article_links) >= max_articles:
+                        break
+                    
+                    # 滚动到底部
+                    page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                    self._random_delay(2, 3)
+                    scroll_count += 1
+                    self.logger.info(f"滚动 [{scroll_count}/{max_scrolls}]，已收集 {len(article_links)} 篇文章")
+                
+                self.logger.info(f"共收集 {len(article_links)} 篇文章链接")
+                
+                # 解析讨论（用于报告）
                 items = page.query_selector_all('.timeline__item')
                 self.logger.info(f"找到 {len(items)} 条讨论")
                 
@@ -208,7 +331,7 @@ class XueqiuStockCrawler:
                         content = re.sub(r'转发.*$', '', content)
                         content = content.strip()[:500]
                         
-                        # 获取链接
+                        # 获取链接（用于讨论显示）
                         link_elem = item.query_selector('a[href*="/{}/"]'.format(symbol))
                         href = ''
                         if link_elem:
@@ -225,6 +348,20 @@ class XueqiuStockCrawler:
                             ))
                     except Exception as e:
                         self.logger.warning(f"解析讨论失败: {e}")
+                
+                # 4. 爬取文章详情
+                if article_links:
+                    self.logger.info(f"开始爬取 {min(len(article_links), max_articles)} 篇文章详情...")
+                    for i, article_info in enumerate(article_links[:max_articles]):
+                        try:
+                            self._random_delay(2, 4)
+                            article_url = article_info['url'] if isinstance(article_info, dict) else article_info
+                            article = self._crawl_article_detail(page, article_url)
+                            if article and article.content:
+                                stock_info.articles.append(article)
+                                self.logger.info(f"  文章 [{i+1}]: {article.title[:30]}...")
+                        except Exception as e:
+                            self.logger.warning(f"  爬取文章失败: {e}")
                 
                 # 4. 访问资讯页
                 self.logger.info(f"访问资讯页: /S/{symbol}/news")
@@ -289,6 +426,7 @@ class XueqiuStockCrawler:
             'name': stock_info.name,
             'price': stock_info.price,
             'discussions': [asdict(d) for d in stock_info.discussions],
+            'articles': [asdict(a) for a in stock_info.articles],  # 新增
             'news': [asdict(n) for n in stock_info.news],
             'notices': [asdict(n) for n in stock_info.notices],
             'crawl_time': datetime.now().isoformat()
