@@ -618,44 +618,56 @@ class XueqiuStockCrawlerV2:
         
         self.logger.info(f"解析资讯: 找到 {len(items)} 条")
         
-        for item in items[:max_count]:
+        for idx, item in enumerate(items[:max_count]):
             try:
                 text = item.inner_text().strip()
-                lines = text.split('\n')
                 
-                # 提取标题（通常在第一行）
-                title = lines[0] if lines else text[:100]
+                # 提取标题 - 清理无关内容
+                title = text
+                title = re.sub(r'^携程\(TCOM\)\d{2}-\d{2}\s*\d{1,2}:\d{2}·\s*来自新闻\s*', '', title)
+                title = re.sub(r'^收起\s*', '', title)
+                title = title[:100].strip()
                 
                 # 提取时间
-                time_match = re.search(r'(\d+小时前|\d+天前|昨天|\d{2}-\d{2}|\d{4}-\d{2}-\d{2})', text)
+                time_match = re.search(r'(\d{2}-\d{2})', text)
                 time_str = time_match.group(1) if time_match else ''
                 
-                # 提取来源
-                source_match = re.search(r'来自([^\n]+)', text)
-                source = source_match.group(1).strip()[:30] if source_match else '雪球'
-                
-                # 获取链接
+                # 获取链接 - 直接遍历所有链接
                 link = ''
                 link_elems = item.query_selector_all('a')
+                
+                # 调试：打印前3个链接
+                if idx < 3:
+                    self.logger.info(f"  资讯[{idx+1}] 找到 {len(link_elems)} 个链接")
+                    for j, le in enumerate(link_elems[:5]):
+                        h = le.get_attribute('href') or ''
+                        self.logger.info(f"    [{j}] {h}")
+                
                 for link_elem in link_elems:
                     href = link_elem.get_attribute('href') or ''
-                    if href.startswith('http'):
+                    # 匹配格式: /S/股票代码/文章ID
+                    if re.match(r'^/S/\w+/\d+$', href):
+                        link = 'https://xueqiu.com' + href
+                        self.logger.info(f"  资讯[{idx+1}] 匹配成功: {link}")
+                        break
+                    # 外部链接
+                    if href.startswith('http') and 'xueqiu.com/S/' not in href:
                         link = href
                         break
-                    elif href.startswith('/'):
-                        link = 'https://xueqiu.com' + href
-                        break
+                
+                if not link and idx < 3:
+                    self.logger.warning(f"  资讯[{idx+1}] 未找到有效链接")
                 
                 if title and len(title) > 5:
                     news_list.append(News(
-                        title=title[:100],
+                        title=title,
                         time=time_str,
-                        source=source,
-                        link=link
+                        source='雪球资讯',
+                        link=link or 'https://xueqiu.com/S/TCOM'
                     ))
                     
             except Exception as e:
-                self.logger.debug(f"解析资讯失败: {e}")
+                self.logger.warning(f"解析资讯失败: {e}")
         
         return news_list
     
@@ -664,19 +676,51 @@ class XueqiuStockCrawlerV2:
         notices = []
         
         try:
-            # 公告可能在特定区域
-            page_content = page.content()
+            # 等待公告内容加载
+            time.sleep(1)
             
-            # 查找公告链接
-            notice_links = re.findall(r'/S/\w+/(\d+)', page_content)
-            notice_links = list(set(notice_links))[:10]
+            # 使用 JavaScript 获取公告列表
+            notice_items = page.evaluate('''() => {
+                const items = [];
+                const timelineItems = document.querySelectorAll('.timeline__item');
+                
+                for (const item of timelineItems) {
+                    const text = item.innerText || '';
+                    const links = item.querySelectorAll('a');
+                    
+                    for (const link of links) {
+                        const href = link.getAttribute('href') || '';
+                        // 匹配格式: /S/股票代码/文章ID
+                        if (/^\\/S\\/\\w+\\/\\d+$/.test(href)) {
+                            let title = text.split('\\n')[0] || '公告';
+                            // 清理标题
+                            title = title.replace(/^携程\\(TCOM\\)\\d{2}-\\d{2}\\s*\\d{1,2}:\\d{2}·\\s*来自公告\\s*/, '');
+                            title = title.substring(0, 50);
+                            
+                            const idMatch = href.match(/\\/(\\d+)$/);
+                            const id = idMatch ? idMatch[1] : '';
+                            
+                            items.push({
+                                title: title || '公告',
+                                link: 'https://xueqiu.com' + href,
+                                id: id
+                            });
+                            break;
+                        }
+                    }
+                }
+                
+                return items;
+            }''')
             
-            for nid in notice_links:
+            for item in notice_items[:10]:
                 notices.append(Notice(
-                    title='公告',
-                    link=f'https://xueqiu.com/S/{nid}',
-                    id=nid
+                    title=item.get('title', '公告'),
+                    link=item.get('link', ''),
+                    id=item.get('id', '')
                 ))
+            
+            self.logger.info(f"解析公告: 找到 {len(notices)} 条")
                 
         except Exception as e:
             self.logger.warning(f"解析公告失败: {e}")
@@ -864,11 +908,13 @@ class XueqiuStockCrawlerV2:
                             link_elems = item.query_selector_all('a')
                             for link_elem in link_elems:
                                 href = link_elem.get_attribute('href') or ''
-                                if href.startswith('http'):
-                                    link = href
-                                    break
-                                elif href.startswith('/'):
+                                # 优先匹配: /S/股票代码/文章ID
+                                if re.match(r'^/S/\w+/\d+$', href):
                                     link = 'https://xueqiu.com' + href
+                                    break
+                                # 外部链接
+                                if href.startswith('http') and 'xueqiu.com/S/' not in href:
+                                    link = href
                                     break
                             
                             if title and len(title) > 5:
