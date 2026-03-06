@@ -593,6 +593,282 @@ class SmartCrawlerV2:
         }
 
 
+def generate_evaluation_report(result: dict) -> str:
+    """生成包含爬取清单的评估报告"""
+    from datetime import datetime
+    
+    eval_data = result.get('evaluation', {})
+    symbol = result.get('symbol', 'UNKNOWN')
+    
+    report = f'''# {symbol} 信息充分性评估报告
+
+**评估时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+**股票代码**: {symbol}
+**总分**: {eval_data.get('total_score', 0)}/200
+**充分性**: {eval_data.get('sufficiency', '-')}
+
+---
+
+## 一、各主题评分详情
+
+'''
+    
+    scores = eval_data.get('scores', {})
+    for topic, sdata in scores.items():
+        score = sdata.get('score', 0)
+        reason = sdata.get('reason', '')
+        evidence = sdata.get('evidence', '')
+        bar = '█' * (score // 5)
+        
+        report += f'''### {topic} - {score}分 {bar}
+
+**评分理由**: {reason}
+
+**原文证据**: {evidence}
+
+---
+
+'''
+    
+    # 质量评估
+    quality = eval_data.get('quality_assessment', {})
+    report += f'''## 二、质量评估
+
+| 维度 | 评估 |
+|------|------|
+| 信息来源可靠性 | {quality.get('source_reliability', '-')} |
+| 观点多样性 | {quality.get('viewpoint_diversity', '-')} |
+| 深度文章数 | {quality.get('deep_articles_count', '-')} 篇 |
+
+'''
+    
+    # 覆盖分析
+    coverage = eval_data.get('coverage_analysis', {})
+    report += f'''## 三、内容覆盖分析
+
+**优势领域**: {', '.join(coverage.get('strengths', []))}
+
+**缺口领域**: {', '.join(coverage.get('gaps', [])) if coverage.get('gaps') else '无'}
+
+'''
+    
+    # 爬取内容清单
+    report += '''## 四、爬取内容清单
+
+'''
+    
+    # 文章清单
+    articles = result.get('articles', [])
+    report += f'''### 专栏文章（{len(articles)}篇）
+
+| # | 标题 | 作者 | 链接 |
+|---|------|------|------|
+'''
+    for i, a in enumerate(articles, 1):
+        title = a.get('title', '无标题')[:40]
+        author = a.get('author', '未知')[:15]
+        link = a.get('link', '')
+        report += f'| {i} | {title}... | {author} | [查看]({link}) |\n'
+    
+    # 讨论清单
+    discussions = result.get('discussions', [])
+    report += f'''
+### 热门讨论（{len(discussions)}条）
+
+| # | 作者 | 内容摘要 | 链接 |
+|---|------|----------|------|
+'''
+    for i, d in enumerate(discussions, 1):
+        author = d.get('author', '未知')[:15]
+        content = d.get('content', '')[:50]
+        link = d.get('link', '')
+        report += f'| {i} | {author} | {content}... | [查看]({link}) |\n'
+    
+    # 资讯清单
+    news = result.get('news', [])
+    report += f'''
+### 相关资讯（{len(news)}条）
+
+| # | 标题 | 时间 | 链接 |
+|---|------|------|------|
+'''
+    for i, n in enumerate(news, 1):
+        title = n.get('title', '无标题')[:40]
+        time_str = n.get('time', '')
+        link = n.get('link', '')
+        report += f'| {i} | {title}... | {time_str} | [查看]({link}) |\n'
+    
+    # 公告清单
+    notices = result.get('notices', [])
+    report += f'''
+### 公告（{len(notices)}条）
+
+| # | 标题 | 链接 |
+|---|------|------|
+'''
+    for i, n in enumerate(notices, 1):
+        title = n.get('title', '公告')[:50]
+        link = n.get('link', '')
+        report += f'| {i} | {title} | [查看]({link}) |\n'
+    
+    # 爬取建议
+    crawl = eval_data.get('crawl_suggestions', {})
+    report += f'''
+## 五、爬取建议
+
+| 项目 | 建议 |
+|------|------|
+| 是否需要继续爬取 | {'否' if not eval_data.get('need_more_crawl', True) else '是'} |
+| 优先类型 | {', '.join(crawl.get('priority', []))} |
+| 关注主题 | {', '.join(crawl.get('focus_topics', [])) if crawl.get('focus_topics') else '无'} |
+| 原因 | {crawl.get('reason', '-')} |
+
+---
+
+**结论**: 总分 {eval_data.get('total_score', 0)}/200，{eval_data.get('sufficiency', '')}，进入深度分析阶段。
+'''
+    
+    return report
+
+
+def generate_evaluation_report(result: dict) -> str:
+    """生成包含爬取清单的评估报告"""
+    from datetime import datetime
+    
+    eval_data = result.get('evaluation', {})
+    symbol = result.get('symbol', 'UNKNOWN')
+    
+    report = f'''# {symbol} 信息充分性评估报告
+
+**评估时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+**股票代码**: {symbol}
+**总分**: {eval_data.get('total_score', 0)}/200
+**充分性**: {eval_data.get('sufficiency', '-')}
+
+---
+
+## 一、各主题评分详情
+
+'''
+    
+    scores = eval_data.get('scores', {})
+    for topic, sdata in scores.items():
+        score = sdata.get('score', 0)
+        reason = sdata.get('reason', '')
+        evidence = sdata.get('evidence', '')
+        bar = '█' * (score // 5)
+        
+        report += f'''### {topic} - {score}分 {bar}
+
+**评分理由**: {reason}
+
+**原文证据**: {evidence}
+
+---
+
+'''
+    
+    # 质量评估
+    quality = eval_data.get('quality_assessment', {})
+    report += f'''## 二、质量评估
+
+| 维度 | 评估 |
+|------|------|
+| 信息来源可靠性 | {quality.get('source_reliability', '-')} |
+| 观点多样性 | {quality.get('viewpoint_diversity', '-')} |
+| 深度文章数 | {quality.get('deep_articles_count', '-')} 篇 |
+
+'''
+    
+    # 覆盖分析
+    coverage = eval_data.get('coverage_analysis', {})
+    report += f'''## 三、内容覆盖分析
+
+**优势领域**: {', '.join(coverage.get('strengths', []))}
+
+**缺口领域**: {', '.join(coverage.get('gaps', [])) if coverage.get('gaps') else '无'}
+
+'''
+    
+    # 爬取内容清单
+    report += '''## 四、爬取内容清单
+
+'''
+    
+    # 文章清单
+    articles = result.get('articles', [])
+    report += f'''### 专栏文章（{len(articles)}篇）
+
+| # | 标题 | 作者 | 链接 |
+|---|------|------|------|
+'''
+    for i, a in enumerate(articles, 1):
+        title = a.get('title', '无标题')[:40]
+        author = a.get('author', '未知')[:15]
+        link = a.get('link', '')
+        report += f'| {i} | {title}... | {author} | [查看]({link}) |\n'
+    
+    # 讨论清单
+    discussions = result.get('discussions', [])
+    report += f'''
+### 热门讨论（{len(discussions)}条）
+
+| # | 作者 | 内容摘要 | 链接 |
+|---|------|----------|------|
+'''
+    for i, d in enumerate(discussions, 1):
+        author = d.get('author', '未知')[:15]
+        content = d.get('content', '')[:50]
+        link = d.get('link', '')
+        report += f'| {i} | {author} | {content}... | [查看]({link}) |\n'
+    
+    # 资讯清单
+    news = result.get('news', [])
+    report += f'''
+### 相关资讯（{len(news)}条）
+
+| # | 标题 | 时间 | 链接 |
+|---|------|------|------|
+'''
+    for i, n in enumerate(news, 1):
+        title = n.get('title', '无标题')[:40]
+        time_str = n.get('time', '')
+        link = n.get('link', '')
+        report += f'| {i} | {title}... | {time_str} | [查看]({link}) |\n'
+    
+    # 公告清单
+    notices = result.get('notices', [])
+    report += f'''
+### 公告（{len(notices)}条）
+
+| # | 标题 | 链接 |
+|---|------|------|
+'''
+    for i, n in enumerate(notices, 1):
+        title = n.get('title', '公告')[:50]
+        link = n.get('link', '')
+        report += f'| {i} | {title} | [查看]({link}) |\n'
+    
+    # 爬取建议
+    crawl = eval_data.get('crawl_suggestions', {})
+    report += f'''
+## 五、爬取建议
+
+| 项目 | 建议 |
+|------|------|
+| 是否需要继续爬取 | {'否' if not eval_data.get('need_more_crawl', True) else '是'} |
+| 优先类型 | {', '.join(crawl.get('priority', []))} |
+| 关注主题 | {', '.join(crawl.get('focus_topics', [])) if crawl.get('focus_topics') else '无'} |
+| 原因 | {crawl.get('reason', '-')} |
+
+---
+
+**结论**: 总分 {eval_data.get('total_score', 0)}/200，{eval_data.get('sufficiency', '')}，进入深度分析阶段。
+'''
+    
+    return report
+
+
 def main():
     import argparse
     
@@ -618,16 +894,34 @@ def main():
         f.write(result['report'])
     print(f"\n  报告已保存: {report_path}")
     
-    # 保存完整数据
+    # 生成并保存评估报告（含爬取清单）
+    if result.get('evaluation'):
+        eval_report = generate_evaluation_report(result)
+        eval_path = output_dir / f'{args.symbol}_evaluation_{timestamp}.md'
+        with open(eval_path, 'w', encoding='utf-8') as f:
+            f.write(eval_report)
+        print(f"  评估报告已保存: {eval_path}")
+    
+    # 保存完整数据（含爬取内容清单）
     data_path = output_dir / f'{args.symbol}_smart_v2_data_{timestamp}.json'
+    
+    # 构建完整数据（含爬取内容清单）
+    full_data = {
+        'symbol': result['symbol'],
+        'evaluation': result.get('evaluation'),
+        'financial_data': result.get('financial_data'),
+        'articles': result.get('articles', []),
+        'discussions': result.get('discussions', []),
+        'news': result.get('news', []),
+        'notices': result.get('notices', []),
+        'articles_count': len(result.get('articles', [])),
+        'discussions_count': len(result.get('discussions', [])),
+        'news_count': len(result.get('news', [])),
+        'notices_count': len(result.get('notices', []))
+    }
+    
     with open(data_path, 'w', encoding='utf-8') as f:
-        json.dump({
-            'symbol': result['symbol'],
-            'financial_data': result['financial_data'],
-            'evaluation': result['evaluation'],
-            'articles_count': len(result['articles']),
-            'discussions_count': len(result['discussions'])
-        }, f, ensure_ascii=False, indent=2)
+        json.dump(full_data, f, ensure_ascii=False, indent=2)
     print(f"  数据已保存: {data_path}")
 
 
