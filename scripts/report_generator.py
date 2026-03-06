@@ -34,8 +34,28 @@ class GLM5Analyzer:
     """GLM-5 分析器"""
     
     def __init__(self, api_key: str = None):
-        self.api_key = api_key or os.environ.get('BAILIAN_API_KEY', '')
-        self.api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        # 优先使用传入的 key，然后环境变量，最后从 openclaw.json 读取
+        if not api_key:
+            api_key = os.environ.get('BAILIAN_API_KEY', '')
+        
+        # 从 openclaw.json 读取配置
+        self.base_url = "https://coding.dashscope.aliyuncs.com/v1"
+        
+        if not api_key:
+            try:
+                config_path = os.path.expanduser('~/.openclaw/openclaw.json')
+                if os.path.exists(config_path):
+                    import json as json_module
+                    with open(config_path, 'r') as f:
+                        config = json_module.load(f)
+                        provider = config.get('models', {}).get('providers', {}).get('qwencode', {})
+                        api_key = provider.get('apiKey', '')
+                        self.base_url = provider.get('baseUrl', self.base_url)
+            except:
+                pass
+        
+        self.api_key = api_key
+        self.api_url = f"{self.base_url}/chat/completions"
         
     def analyze(self, prompt: str, max_tokens: int = 4000) -> str:
         """调用 GLM-5 API"""
