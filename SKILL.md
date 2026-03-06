@@ -4,14 +4,29 @@ description: 雪球公司分析 Skill V2 - 自动化分析雪球文章中提及�
 version: 2.0.0
 author: winterswang
 triggers:
-  - pattern: "分析 雪球 {company}"
-  - pattern: "雪球分析 {company}"
-  - pattern: "分析{company}雪球"
+  - pattern: "雪球分析 {symbol}"
+    command: "python3 /root/.openclaw/workspace/xueqiu-analyzer-skill/scripts/smart_crawler_v2.py {symbol}"
+  - pattern: "分析 雪球 {symbol}"
+    command: "python3 /root/.openclaw/workspace/xueqiu-analyzer-skill/scripts/smart_crawler_v2.py {symbol}"
+  - pattern: "分析{symbol}雪球"
+    command: "python3 /root/.openclaw/workspace/xueqiu-analyzer-skill/scripts/smart_crawler_v2.py {symbol}"
 ---
 
 # 雪球公司分析 Skill V2
 
 自动化分析雪球文章中提及的上市公司，结合多数据源生成结构化的投资价值分析报告。
+
+## 使用方式
+
+直接在对话中说：
+- `雪球分析 TCOM`
+- `分析 雪球 AAPL`
+- `分析AAPL雪球`
+
+系统会自动：
+1. 爬取该股票的讨论、资讯、公告、文章
+2. 评估信息充分性（如不足会继续爬取，最多3轮）
+3. 生成深度分析报告
 
 ## 🎉 V2 新增功能
 
@@ -19,66 +34,100 @@ triggers:
 |------|------|------|
 | **新版爬虫** | 解决登录弹窗、Tab切换、分页累积问题 | ✅ |
 | **雪球财务API** | PE、PB、ROE、市值、52周高低 | ✅ |
-| **AkShare 补充** | 毛利率、净利率等盈利指标 | ✅ |
-| **K线数据** | 雪球 API 支持 52周高低等 | ✅ |
+| **AkShare 补充** | 毛利率、净利率、营收/利润增速 | ✅ |
+| **智能评估** | Prompt 1 评估信息充分性 | ✅ |
+| **深度分析** | Prompt 2 生成投资分析报告 | ✅ |
 | **全流程自动化** | 一键生成完整分析报告 | ✅ |
 
 ### 已解决问题
 
 1. ✅ 登录弹窗拦截 - JavaScript 自动移除
 2. ✅ Tab 切换被遮罩拦截 - JS 点击绕过
-3. ✅ 分页数据累积 - 内容 hash 去重
-4. ✅ 财务数据集成 - 雪球 API + AkShare
+3. ✅ 分页数据累积 - 按类型分别去重
+4. ✅ 所有数据类型提交到模型 - 文章/讨论/资讯/公告
+
+## 分析流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    智能迭代爬取系统 V2                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   第一轮爬取 ──→ Prompt 1（评估）──→ 评估结果                  │
+│        ↑              │                    │                │
+│        │              ↓                    ↓                │
+│        │         充分性评分            不充分？               │
+│        │              │                    │                │
+│        │              ↓                    ↓                │
+│        │         >= 150分？           继续爬取 ←─┘             │
+│        │              │                    │                 │
+│        │         否   │                    │                 │
+│        │              ↓                    │                 │
+│        └────── 第二轮爬取                 │                 │
+│                     ...                   │                 │
+│                                           ↓                  │
+│                                      充分 或 最大3轮          │
+│                                           │                  │
+│                                           ↓                  │
+│                                   Prompt 2（深度分析）        │
+│                                           │                  │
+│                                           ↓                  │
+│                                      投资分析报告             │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## 功能模块
 
-### 1. 股票详情页爬取 (`stock_crawler_v2.py`)
+### 1. 智能爬取 (`smart_crawler_v2.py`)
 
 - 自动登录（使用保存的凭据）
-- 爬取讨论、资讯、公告
+- 爬取讨论、资讯、公告、文章
 - 分页累积加载
-- 文章详情获取
+- 按类型分别去重
 
 ### 2. 财务数据获取 (`financial_fetcher.py`)
 
 **数据源优先级：**
 1. 雪球 API - PE、PB、ROE、市值、52周高低
-2. AkShare - 毛利率、净利率
+2. AkShare - 毛利率、净利率、营收增速、利润增速
 
-**支持指标：**
-| 指标 | 来源 | 说明 |
-|------|------|------|
-| PE_TTM | 雪球 | 滚动市盈率 |
-| PB | 雪球 | 市净率 |
-| ROE | 雪球(计算) | 净利润/股东权益 |
-| 市值 | 雪球 | 总市值 |
-| 52周高低 | 雪球 | 价格区间 |
-| 毛利率 | AkShare | 销售毛利率 |
-| 净利率 | AkShare | 销售净利率 |
+### 3. Prompt 1：信息充分性评估
 
-### 3. GLM-5 深度分析 (`report_generator.py`)
+基于价值投资者需求评估 8 个主题：
 
-- 结构化投资分析报告
-- 引用原文内容
-- 估值判断 + 投资建议
-- 风险提示
+| 主题 | 满分标准 |
+|------|----------|
+| 估值分析 | 完整估值模型/DCF |
+| 商业模式 | 深度护城河分析 |
+| 财务质量 | 完整财务分析 |
+| 竞争格局 | 深度竞争分析 |
+| 管理层 | 深度管理层分析 |
+| 风险因素 | 系统性风险分析 |
+| 用户价值 | 真实用户深度反馈 |
+| 未来前景 | 清晰增长逻辑 |
 
-### 4. 全流程自动化 (`run_analysis.py`)
+### 4. Prompt 2：深度分析
 
-一键完成：爬取 → 分析 → 报告
+输出结构：
+- 执行摘要（估值判断、投资建议、核心逻辑、关键风险）
+- 深度分析（8 个主题）
+- 投资决策（入场条件、跟踪指标、退出条件）
 
-## 使用方式
+## 评分标准
 
-```bash
-# 全流程分析
-python scripts/run_analysis.py TCOM --max-pages 3
+| 分数区间 | 判定 | 行动 |
+|----------|------|------|
+| >= 150 | 充分 | ✅ 进入深度分析 |
+| 100-150 | 基本充分 | 建议1-2轮补充 |
+| < 100 | 不足 | 继续爬取 |
 
-# 单独爬取
-python scripts/stock_crawler_v2.py TCOM
+## 配置文件
 
-# 单独获取财务数据
-python scripts/financial_fetcher.py TCOM
-```
+| 文件 | 用途 |
+|------|------|
+| `config/xueqiu_credentials.yaml` | 雪球登录凭据 |
+| `config/xueqiu_cookies.json` | 自动保存的 cookies |
 
 ## 数据源状态
 
@@ -87,24 +136,26 @@ python scripts/financial_fetcher.py TCOM
 | 雪球股票详情页 | 讨论、资讯、公告 | ✅ |
 | 雪球 API | PE、PB、ROE、市值 | ✅ |
 | 雪球 K线 | 52周高低、价格区间 | ✅ |
-| AkShare | 毛利率、净利率 | ✅ |
+| AkShare | 毛利率、净利率、增速 | ✅ |
 | GLM-5 | 深度分析 | ✅ |
 
 ## 项目文件
 
 ```
 xueqiu-analyzer-skill/
+├── SKILL.md                           # 本文件
 ├── scripts/
-│   ├── run_analysis.py        # 全流程入口
-│   ├── stock_crawler_v2.py    # 新版爬虫
-│   ├── financial_fetcher.py   # 财务数据
-│   ├── report_generator.py    # 报告生成
-│   └── get_username.py        # 用户名获取
+│   ├── smart_crawler_v2.py            # 智能迭代爬取主程序（V2）
+│   ├── stock_crawler_v2.py            # 爬虫核心
+│   ├── financial_fetcher.py           # 财务数据
+│   ├── data_quality_checker.py        # 数据质量检查
+│   ├── run_analysis.py                # 简单版全流程（V1兼容）
+│   └── report_generator.py            # 报告生成器
 ├── config/
-│   ├── xueqiu_credentials.yaml
-│   └── xueqiu_cookies.json
+│   ├── xueqiu_credentials.yaml        # 登录凭据
+│   └── xueqiu_cookies.json            # 自动保存
 └── data/
-    └── reports/               # 生成的报告
+    └── reports/                       # 输出报告
 ```
 
 ## 验收标准
@@ -112,5 +163,12 @@ xueqiu-analyzer-skill/
 - [x] 能从股票详情页爬取讨论、资讯、公告
 - [x] 分页累积加载，数据量可配置
 - [x] 财务数据自动获取（雪球 + AkShare）
-- [x] GLM-5 深度分析报告
-- [x] 全流程自动化测试通过
+- [x] Prompt 1 评估信息充分性
+- [x] Prompt 2 生成深度分析报告
+- [x] 报告有原文引用
+- [x] 支持口令触发
+
+## 版本说明
+
+- **V2 (默认)**: `smart_crawler_v2.py` - 智能迭代爬取，两阶段 Prompt
+- **V1 (兼容)**: `run_analysis.py` - 简单版全流程
