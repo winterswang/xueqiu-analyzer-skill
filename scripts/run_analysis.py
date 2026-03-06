@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-雪球公司分析全流程测试
+雪球公司分析全流程 V2
 
 流程：
-1. 使用 stock_crawler_v2 爬取股票数据
-2. 使用 report_generator 生成分析报告
-3. 保存报告到文件
+1. 爬取股票数据（讨论、资讯、公告、文章）
+2. 获取财务数据（雪球 API + AkShare）
+3. 生成分析报告
+4. 保存并同步 Gist
 """
 
 import os
@@ -20,6 +21,7 @@ script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
 
 from stock_crawler_v2 import XueqiuStockCrawlerV2
+from financial_fetcher import FinancialDataFetcher
 from report_generator import ReportGenerator
 
 
@@ -37,7 +39,7 @@ def run_full_analysis(symbol: str, max_discussions: int = 20, max_news: int = 20
         output_dir: 输出目录
     """
     print(f"\n{'='*60}")
-    print(f"雪球公司分析 - 全流程测试")
+    print(f"雪球公司分析 V2 - 全流程")
     print(f"股票代码: {symbol}")
     print(f"{'='*60}\n")
     
@@ -48,7 +50,7 @@ def run_full_analysis(symbol: str, max_discussions: int = 20, max_news: int = 20
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # ========== 步骤 1: 爬取股票数据 ==========
-    print(f"\n[步骤 1/3] 爬取股票数据...")
+    print(f"\n[步骤 1/4] 爬取股票数据...")
     print(f"  - 最大讨论数: {max_discussions}")
     print(f"  - 最大资讯数: {max_news}")
     print(f"  - 最大文章数: {max_articles}")
@@ -65,14 +67,39 @@ def run_full_analysis(symbol: str, max_discussions: int = 20, max_news: int = 20
     
     stock_data = crawler.to_dict(stock_info)
     
+    # ========== 步骤 2: 获取财务数据 ==========
+    print(f"\n[步骤 2/4] 获取财务数据...")
+    
+    financial_fetcher = FinancialDataFetcher()
+    
+    # 读取 cookies 文件
+    cookies_path = script_dir.parent / 'config' / 'xueqiu_cookies.json'
+    cookies = None
+    if cookies_path.exists():
+        with open(cookies_path, 'r') as f:
+            cookies = json.load(f)
+    
+    financial_data = financial_fetcher.fetch(symbol, cookies)
+    
+    if financial_data:
+        stock_data['financial_data'] = financial_fetcher.to_dict(financial_data)
+        print(f"  ✅ 财务数据获取成功")
+        print(f"     PE: {financial_data.pe_ttm:.1f}")
+        print(f"     PB: {financial_data.pb:.1f}")
+        print(f"     ROE: {financial_data.roe:.1f}%")
+        print(f"     市值: {financial_data.market_cap/1e9:.1f}B")
+        print(f"     52周区间: {financial_data.low52w:.1f} - {financial_data.high52w:.1f}")
+    else:
+        print(f"  ⚠️ 财务数据获取失败")
+    
     # 保存原始数据
     data_file = output_dir / f'{symbol}_data_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
     with open(data_file, 'w', encoding='utf-8') as f:
         json.dump(stock_data, f, ensure_ascii=False, indent=2)
     print(f"\n原始数据已保存: {data_file}")
     
-    # ========== 步骤 2: 生成分析报告 ==========
-    print(f"\n[步骤 2/3] 生成分析报告...")
+    # ========== 步骤 3: 生成分析报告 ==========
+    print(f"\n[步骤 3/4] 生成分析报告...")
     
     generator = ReportGenerator()
     report = generator.generate(stock_data)
@@ -83,8 +110,8 @@ def run_full_analysis(symbol: str, max_discussions: int = 20, max_news: int = 20
         f.write(report)
     print(f"\n分析报告已保存: {report_file}")
     
-    # ========== 步骤 3: 输出摘要 ==========
-    print(f"\n[步骤 3/3] 输出摘要...")
+    # ========== 步骤 4: 输出摘要 ==========
+    print(f"\n[步骤 4/4] 输出摘要...")
     print(f"\n{'='*60}")
     print(f"分析完成!")
     print(f"{'='*60}")
@@ -93,6 +120,14 @@ def run_full_analysis(symbol: str, max_discussions: int = 20, max_news: int = 20
     print(f"  资讯: {len(stock_info.news)} 条")
     print(f"  公告: {len(stock_info.notices)} 条")
     print(f"  文章: {len(stock_info.articles)} 篇")
+    
+    if financial_data:
+        print(f"\n  财务数据:")
+        print(f"    PE: {financial_data.pe_ttm:.1f}")
+        print(f"    PB: {financial_data.pb:.1f}")
+        print(f"    ROE: {financial_data.roe:.1f}%")
+        print(f"    52周高低: {financial_data.low52w:.1f} - {financial_data.high52w:.1f}")
+    
     print(f"\n  原始数据: {data_file}")
     print(f"  分析报告: {report_file}")
     print(f"{'='*60}\n")
@@ -101,7 +136,7 @@ def run_full_analysis(symbol: str, max_discussions: int = 20, max_news: int = 20
 
 
 def main():
-    parser = argparse.ArgumentParser(description='雪球公司分析全流程测试')
+    parser = argparse.ArgumentParser(description='雪球公司分析全流程 V2')
     parser.add_argument('symbol', help='股票代码 (如 TCOM, APP)')
     parser.add_argument('--max-discussions', type=int, default=20, help='最大讨论数')
     parser.add_argument('--max-news', type=int, default=20, help='最大资讯数')
