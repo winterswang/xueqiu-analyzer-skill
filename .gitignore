@@ -50,3 +50,4 @@ logs/*.log
 .DS_Storeconfig/xueqiu_credentials.yaml
 config/xueqiu_credentials.yaml
 config/xueqiu_credentials.yaml
+config/xueqiu_cookies.json

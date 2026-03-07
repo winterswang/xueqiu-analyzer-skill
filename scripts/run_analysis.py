@@ -23,10 +23,11 @@ sys.path.insert(0, str(script_dir))
 from stock_crawler_v2 import XueqiuStockCrawlerV2
 from financial_fetcher import FinancialDataFetcher
 from report_generator import ReportGenerator
+from data_quality_checker import DataQualityChecker
 
 
-def run_full_analysis(symbol: str, max_discussions: int = 20, max_news: int = 20, 
-                      max_articles: int = 10, max_pages: int = 3, output_dir: str = None):
+def run_full_analysis(symbol: str, max_discussions: int = 30, max_news: int = 30, 
+                      max_articles: int = 10, max_pages: int = 5, output_dir: str = None):
     """
     运行全流程分析
     
@@ -126,6 +127,10 @@ def run_full_analysis(symbol: str, max_discussions: int = 20, max_news: int = 20
         print(f"    PE: {financial_data.pe_ttm:.1f}")
         print(f"    PB: {financial_data.pb:.1f}")
         print(f"    ROE: {financial_data.roe:.1f}%")
+        print(f"    毛利率: {financial_data.gross_margin:.1f}%")
+        print(f"    净利率: {financial_data.net_margin:.1f}%")
+        print(f"    营收增速: {financial_data.revenue_growth:.1f}%")
+        print(f"    利润增速: {financial_data.profit_growth:.1f}%")
         print(f"    52周高低: {financial_data.low52w:.1f} - {financial_data.high52w:.1f}")
     
     print(f"\n  原始数据: {data_file}")
@@ -138,10 +143,10 @@ def run_full_analysis(symbol: str, max_discussions: int = 20, max_news: int = 20
 def main():
     parser = argparse.ArgumentParser(description='雪球公司分析全流程 V2')
     parser.add_argument('symbol', help='股票代码 (如 TCOM, APP)')
-    parser.add_argument('--max-discussions', type=int, default=20, help='最大讨论数')
-    parser.add_argument('--max-news', type=int, default=20, help='最大资讯数')
+    parser.add_argument('--max-discussions', type=int, default=30, help='最大讨论数')
+    parser.add_argument('--max-news', type=int, default=30, help='最大资讯数')
     parser.add_argument('--max-articles', type=int, default=10, help='最大文章数')
-    parser.add_argument('--max-pages', type=int, default=3, help='最大分页数')
+    parser.add_argument('--max-pages', type=int, default=5, help='最大分页数')
     parser.add_argument('--output', '-o', help='输出目录')
     
     args = parser.parse_args()

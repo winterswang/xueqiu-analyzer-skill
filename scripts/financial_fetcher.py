@@ -39,6 +39,9 @@ class FinancialData:
     gross_margin: float = 0.0  # 毛利率
     net_margin: float = 0.0  # 净利率
     akshare_roe: float = 0.0  # AkShare ROE
+    # 增长指标（AkShare）
+    revenue_growth: float = 0.0  # 营收增速（同比）
+    profit_growth: float = 0.0  # 利润增速（同比）
     # 数据来源
     source: str = ""
     fetch_time: str = ""
@@ -142,8 +145,13 @@ class FinancialDataFetcher:
                         result.gross_margin = float(latest.get('GROSS_PROFIT_RATIO', 0) or 0)
                         result.net_margin = float(latest.get('NET_PROFIT_RATIO', 0) or 0)
                         result.akshare_roe = float(latest.get('ROE_AVG', 0) or 0)
+                        # 营收增速和利润增速
+                        result.revenue_growth = float(latest.get('OPERATE_INCOME_YOY', 0) or 0)
+                        result.profit_growth = float(latest.get('PARENT_HOLDER_NETPROFIT_YOY', 0) or 0)
                         result.source += '+AkShare'
                         print(f"  AkShare数据: 毛利率={result.gross_margin:.1f}%, 净利率={result.net_margin:.1f}%")
+                        if result.revenue_growth or result.profit_growth:
+                            print(f"  增长数据: 营收增速={result.revenue_growth:.1f}%, 利润增速={result.profit_growth:.1f}%")
             except Exception as e:
                 print(f"  AkShare 获取失败: {e}")
         
