@@ -55,6 +55,7 @@ class News:
     time: str
     source: str = ""
     link: str = ""
+    content: str = ""  # 新增：资讯正文
 
 
 @dataclass
@@ -928,6 +929,43 @@ class XueqiuStockCrawlerV2:
                             pass
                     
                     self.logger.info(f"获取 {len(stock_info.news)} 条资讯")
+                    
+                    # ========== 爬取资讯详情 ==========
+                    if stock_info.news:
+                        self.logger.info(f"\n爬取资讯详情...")
+                        for i, news in enumerate(stock_info.news[:15]):  # 最多获取15条资讯详情
+                            if news.link and 'xueqiu.com' in news.link:
+                                try:
+                                    self.logger.info(f"  [{i+1}/{min(len(stock_info.news), 15)}] {news.title[:30]}...")
+                                    detail_page = browser.new_page()
+                                    detail_page.goto(news.link, timeout=30000)
+                                    time.sleep(1)
+                                    
+                                    # 尝试提取正文
+                                    content_selectors = [
+                                        '.article__bd__detail',
+                                        '.status-content',
+                                        '.article-content',
+                                        '.news-content',
+                                        'article'
+                                    ]
+                                    
+                                    content = ''
+                                    for selector in content_selectors:
+                                        elem = detail_page.query_selector(selector)
+                                        if elem:
+                                            content = elem.inner_text().strip()
+                                            if len(content) > 100:
+                                                break
+                                    
+                                    if content:
+                                        news.content = content[:2000]  # 限制长度
+                                        self.logger.info(f"    获取内容: {len(content)} 字符")
+                                    
+                                    detail_page.close()
+                                    time.sleep(0.5)
+                                except Exception as e:
+                                    self.logger.warning(f"    获取失败: {e}")
                 
                 # ========== 爬取公告 ==========
                 self.logger.info("\n" + "="*50)

@@ -331,14 +331,21 @@ class SmartCrawlerV2:
         
         # 3. 相关资讯
         if self.all_news:
-            content_parts.append("\n# 相关资讯\n")
+            content_parts.append("\n# 相关资讯（完整内容）\n")
             for i, n in enumerate(self.all_news, 1):
                 title = n.get('title', '无标题')
                 time_str = n.get('time', '')
                 link = n.get('link', '')
-                content_parts.append(f"\n[{i}] {title}")
+                content = n.get('content', '')
+                
+                content_parts.append(f"\n## 资讯 {i}: {title}")
                 content_parts.append(f"时间: {time_str}")
-                content_parts.append(f"链接: {link}")
+                content_parts.append(f"链接: {link}\n")
+                if content:
+                    content_parts.append(content)
+                else:
+                    content_parts.append("（无正文内容）")
+                content_parts.append("\n---\n")
         
         # 4. 公告
         if hasattr(self, 'all_notices') and self.all_notices:
