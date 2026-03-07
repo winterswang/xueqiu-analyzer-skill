@@ -484,7 +484,7 @@ class SmartCrawlerV2:
             method='POST'
         )
         
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with urllib.request.urlopen(req, timeout=1800) as resp:
             result = json.loads(resp.read().decode('utf-8'))
             return result['choices'][0]['message']['content']
     
@@ -507,35 +507,59 @@ class SmartCrawlerV2:
             print(f"  解析评估结果失败: {e}")
         return None
     
-    def run(self, max_rounds: int = 3) -> dict:
-        """执行智能迭代爬取"""
+    def run(self, max_rounds: int = 10) -> dict:
+        """执行智能迭代爬取
+        
+        Args:
+            max_rounds: 最大爬取轮次（默认10）
+        """
         print(f"\n{'='*60}")
         print(f"智能迭代爬取系统 V2: {self.symbol}")
         print(f"{'='*60}")
+        print(f"配置: 最大轮次={max_rounds}, 超时=30分钟, 终止分数>=150")
         
         # 获取财务数据（一次性）
         print("\n[准备] 获取财务数据...")
         self.fetch_financial_data()
         
         evaluation_result = None
+        total_new_content = {'articles': 0, 'discussions': 0, 'news': 0, 'notices': 0}
         
         for round_num in range(1, max_rounds + 1):
             print(f"\n{'='*40}")
-            print(f"第 {round_num} 轮")
+            print(f"第 {round_num}/{max_rounds} 轮")
             print(f"{'='*40}")
             
-            # 爬取
-            pages = 3 + round_num * 2
-            articles = 10 + round_num * 5
-            self.crawl_round(max_pages=pages, max_articles=articles)
+            # 爬取参数：逐步增加
+            pages = min(5 + round_num, 10)  # 最大10页
+            articles = min(10 + round_num * 3, 30)  # 最大30篇
+            new_count = self.crawl_round(max_pages=pages, max_articles=articles)
+            
+            # 累计新增内容
+            for key in total_new_content:
+                total_new_content[key] += new_count.get(key, 0)
             
             # 评估（使用全部内容）
             print("\n  评估信息充分性...")
             eval_prompt = self.build_evaluation_prompt()
             
-            # Token 估算
+            # Token 估算（更精确）
             prompt_chars = len(eval_prompt)
-            print(f"  Prompt 长度: {prompt_chars} 字符 (~{prompt_chars*2} tokens)")
+            prompt_tokens = prompt_chars * 2  # 中文约2字符/token
+            
+            # 分项token统计
+            articles_chars = sum(len(a.get('content', '')) for a in self.all_articles)
+            discussions_chars = sum(len(d.get('content', '')) for d in self.all_discussions)
+            news_chars = sum(len(n.get('title', '') + n.get('content', '')) for n in self.all_news)
+            notices_chars = sum(len(n.get('title', '')) for n in self.all_notices)
+            
+            print(f"\n  📊 内容Token统计:")
+            print(f"     文章: {len(self.all_articles)}篇, ~{articles_chars*2} tokens")
+            print(f"     讨论: {len(self.all_discussions)}条, ~{discussions_chars*2} tokens")
+            print(f"     资讯: {len(self.all_news)}条, ~{news_chars*2} tokens")
+            print(f"     公告: {len(self.all_notices)}条, ~{notices_chars*2} tokens")
+            print(f"     总计: ~{prompt_tokens} tokens")
+            print(f"  Prompt 长度: {prompt_chars} 字符")
             
             eval_response = self.call_llm(eval_prompt, max_tokens=2000)
             
@@ -555,15 +579,15 @@ class SmartCrawlerV2:
                     bar = '█' * (score // 5)
                     print(f"    {topic}: {score:2d}分 {bar}")
                 
-                # 决策
+                # 决策：评分>=150即可终止
                 if evaluation_result.total_score >= 150:
-                    print("\n  ✅ 信息充分，进入深度分析...")
+                    print("\n  ✅ 信息充分（>=150分），进入深度分析...")
                     break
                 elif round_num >= max_rounds:
                     print("\n  ⚠️ 达到最大轮次，强制进入分析...")
                     break
                 else:
-                    print(f"\n  🔄 信息不足，继续爬取...")
+                    print(f"\n  🔄 信息不足（{evaluation_result.total_score}/200 < 150），继续爬取...")
                     time.sleep(2)
             else:
                 print("\n  ⚠️ 评估解析失败，继续下一轮...")
@@ -576,8 +600,15 @@ class SmartCrawlerV2:
         
         analysis_prompt = self.build_analysis_prompt()
         prompt_chars = len(analysis_prompt)
+        
+        # 详细内容统计
+        print(f"\n  📊 送入分析模型的内容:")
+        print(f"     文章: {len(self.all_articles)}篇")
+        print(f"     讨论: {len(self.all_discussions)}条")
+        print(f"     资讯: {len(self.all_news)}条")
+        print(f"     公告: {len(self.all_notices)}条")
+        print(f"     财务数据: {'已获取' if self.financial_data else '未获取'}")
         print(f"\n  Prompt 长度: {prompt_chars} 字符 (~{prompt_chars*2} tokens)")
-        print(f"  内容: {len(self.all_articles)} 文章, {len(self.all_discussions)} 讨论")
         
         print("\n  调用 GLM-5 分析...")
         report = self.call_llm(analysis_prompt, max_tokens=8000)
@@ -587,9 +618,15 @@ class SmartCrawlerV2:
             'articles': self.all_articles,
             'discussions': self.all_discussions,
             'news': self.all_news,
+            'notices': self.all_notices,
             'financial_data': self.financial_data,
             'evaluation': asdict(evaluation_result) if evaluation_result else None,
-            'report': report
+            'report': report,
+            'stats': {
+                'total_rounds': round_num,
+                'total_content': total_new_content,
+                'prompt_tokens': prompt_chars * 2
+            }
         }
 
 
