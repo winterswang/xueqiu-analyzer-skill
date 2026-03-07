@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-智能迭代爬取系统 V2
+智能迭代爬取系统 V2.1
+
+更新内容：
+1. 最大爬取轮次：10轮
+2. API超时：30分钟
+3. 终止条件：评分>=150或最大轮次
+4. Token统计：分项统计文章/讨论/资讯/公告
 
 核心设计：
 1. 每轮爬取后，用全部内容调用 Prompt 1 评估
-2. 根据评分决定是否继续爬取（最多3轮）
-3. 信息充分后，用全部内容调用 Prompt 2 深度分析
-
-特点：
-- 每次调用都是全内容输入
-- 充分利用 128K Token 容量
-- 评分标准基于价值投资者需求
+2. 根据评分决定是否继续爬取（最多10轮）
+3. 评分>=150可提前终止
+4. 信息充分后，用全部内容调用 Prompt 2 深度分析
 """
 
 import os
@@ -911,7 +913,7 @@ def main():
     
     parser = argparse.ArgumentParser(description='智能迭代爬取系统 V2')
     parser.add_argument('symbol', help='股票代码')
-    parser.add_argument('--max-rounds', type=int, default=3, help='最大轮次')
+    parser.add_argument('--max-rounds', type=int, default=10, help='最大轮次（默认10）')
     parser.add_argument('--output', '-o', help='输出目录')
     
     args = parser.parse_args()
