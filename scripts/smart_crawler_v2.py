@@ -32,13 +32,14 @@ from financial_fetcher import FinancialDataFetcher
 
 @dataclass
 class EvaluationResult:
-    """评估结果"""
+    """评估结果 V2.2"""
     total_score: int
     scores: Dict[str, Dict]
     sufficiency: str
     need_more_crawl: bool
     crawl_suggestions: Dict
     quality_assessment: Dict
+    financial_bonus: int = 0  # 财务数据加分项（V2.2 新增）
 
 
 class SmartCrawlerV2:
@@ -210,12 +211,15 @@ class SmartCrawlerV2:
         # 财务数据
         fin_text = ""
         if self.financial_data:
+            # 基础财务数据
             fin_text = f"""
 # 财务数据
 
+## 估值指标
+
 | 指标 | 数值 |
 |------|------|
-| PE | {self.financial_data.get('pe_ttm', 0):.1f} |
+| PE (TTM) | {self.financial_data.get('pe_ttm', 0):.1f} |
 | PB | {self.financial_data.get('pb', 0):.1f} |
 | ROE | {self.financial_data.get('roe', 0):.1f}% |
 | 毛利率 | {self.financial_data.get('gross_margin', 0):.1f}% |
@@ -223,6 +227,25 @@ class SmartCrawlerV2:
 | 营收增速 | {self.financial_data.get('revenue_growth', 0):.1f}% |
 | 利润增速 | {self.financial_data.get('profit_growth', 0):.1f}% |
 | 52周高低 | {self.financial_data.get('low52w', 0):.1f} - {self.financial_data.get('high52w', 0):.1f} |
+"""
+            # 多年 ROIC 数据（V2.2 新增）
+            yearly_roic = self.financial_data.get('yearly_roic', [])
+            if yearly_roic:
+                fin_text += """
+## 多年 ROIC（投入资本回报率）
+
+| 年份 | ROIC(%) | NOPAT(亿) | 投入资本(亿) | 净利润(亿) | 营收(亿) |
+|------|---------|-----------|-------------|-----------|----------|
+"""
+                for row in yearly_roic:
+                    fin_text += f"| {int(row.get('year', 0))} | {row.get('roic', 0):.2f} | {row.get('nopat', 0):.2f} | {row.get('invested_capital', 0):.2f} | {row.get('net_profit', 0):.2f} | {row.get('revenue', 0):.2f} |\n"
+        
+        # 财务数据加分项（V2.2 新增）
+        financial_bonus = 0
+        if yearly_roic:
+            financial_bonus = 10
+            fin_text += f"""
+## 财务数据加分项：+{financial_bonus}分（多年ROIC数据可用）
 """
         
         # 评分标准表格
@@ -264,10 +287,13 @@ class SmartCrawlerV2:
 1. **各主题评分**：对8个主题逐一评分，说明评分理由（必须引用原文证据）
 2. **内容覆盖分析**：哪些方面充分？哪些缺失？
 3. **质量评估**：信息来源是否可靠？观点是否多元？
-4. **爬取建议**：
+4. **财务数据评估**：是否有多年ROIC数据？财务数据是否完整？
+5. **爬取建议**：
    - 总分 >= 150：信息充分，可以进入分析
    - 总分 100-150：信息基本充分，建议补充
    - 总分 < 100：信息不足，必须继续爬取
+
+**注意**：财务数据是额外加分项，不包含在8个主题的200分总分中。如果有多年ROIC数据，可以额外加0-10分。
 
 # 输出格式（严格JSON）
 
@@ -278,6 +304,7 @@ class SmartCrawlerV2:
     "商业模式": {{"score": 25, "reason": "有完整的护城河分析文章", "evidence": "引用原文..."}},
     ...
   }},
+  "financial_bonus": 10,
   "total_score": 145,
   "sufficiency": "基本充分",
   "coverage_analysis": {{
@@ -287,7 +314,8 @@ class SmartCrawlerV2:
   "quality_assessment": {{
     "source_reliability": "信息来源多元",
     "viewpoint_diversity": "有多空双方观点",
-    "deep_articles_count": 3
+    "deep_articles_count": 3,
+    "financial_data_available": true
   }},
   "need_more_crawl": true,
   "crawl_suggestions": {{
@@ -359,12 +387,15 @@ class SmartCrawlerV2:
         # 5. 财务数据
         fin_text = ""
         if self.financial_data:
+            # 基础财务数据
             fin_text = f"""
 # 财务数据
 
+## 估值指标
+
 | 指标 | 数值 |
 |------|------|
-| PE | {self.financial_data.get('pe_ttm', 0):.1f} |
+| PE (TTM) | {self.financial_data.get('pe_ttm', 0):.1f} |
 | PB | {self.financial_data.get('pb', 0):.1f} |
 | ROE | {self.financial_data.get('roe', 0):.1f}% |
 | 毛利率 | {self.financial_data.get('gross_margin', 0):.1f}% |
@@ -372,6 +403,25 @@ class SmartCrawlerV2:
 | 营收增速 | {self.financial_data.get('revenue_growth', 0):.1f}% |
 | 利润增速 | {self.financial_data.get('profit_growth', 0):.1f}% |
 | 52周高低 | {self.financial_data.get('low52w', 0):.1f} - {self.financial_data.get('high52w', 0):.1f} |
+"""
+            # 多年 ROIC 数据（V2.2 新增）
+            yearly_roic = self.financial_data.get('yearly_roic', [])
+            if yearly_roic:
+                fin_text += """
+## 多年 ROIC（投入资本回报率）
+
+| 年份 | ROIC(%) | NOPAT(亿) | 投入资本(亿) | 净利润(亿) | 营收(亿) |
+|------|---------|-----------|-------------|-----------|----------|
+"""
+                for row in yearly_roic:
+                    fin_text += f"| {int(row.get('year', 0))} | {row.get('roic', 0):.2f} | {row.get('nopat', 0):.2f} | {row.get('invested_capital', 0):.2f} | {row.get('net_profit', 0):.2f} | {row.get('revenue', 0):.2f} |\n"
+                
+                fin_text += """
+**ROIC 分析**：
+- ROIC > 15%：优秀，公司创造了显著的经济价值
+- ROIC 10-15%：良好，资本回报率健康
+- ROIC < 10%：需关注，可能存在资本效率问题
+- ROIC < WACC（约8%）：公司可能正在破坏价值
 """
         
         prompt = f"""你是一位资深价值投资分析师，擅长深度分析上市公司投资价值。
@@ -422,7 +472,15 @@ class SmartCrawlerV2:
 （引用原文）
 
 ### 2.3 财务质量
-（引用原文）
+（必须包含以下内容）：
+1. **盈利能力分析**：结合多年 ROIC 数据，分析资本回报率趋势
+2. **ROIC 趋势解读**：
+   - 如果有 ROIC 表格数据，必须分析历年变化趋势
+   - ROIC > 15% 代表什么？ROIC < WACC 代表什么？
+   - 公司是在创造价值还是破坏价值？
+3. **利润率分析**：毛利率、净利率变化趋势
+4. **增长质量**：营收增速 vs 利润增速，是否健康？
+（引用原文证据）
 
 ### 2.4 竞争格局
 （引用原文）
@@ -456,9 +514,13 @@ class SmartCrawlerV2:
 # 重要规则
 
 1. **必须引用原文**：每个关键观点都要标注来源，格式：> 📌 引用自《文章标题》："原文内容"
-2. **定量分析**：尽量使用具体数字
-3. **多空平衡**：既要分析利好，也要分析风险
-4. **可操作性**：投资建议要具体、可执行
+2. **必须分析财务数据**：如果提供了多年 ROIC 表格，必须在「财务质量」章节中分析：
+   - ROIC 历年变化趋势
+   - 判断公司是在创造价值还是破坏价值
+   - ROIC 与 WACC（约8%）的对比
+3. **定量分析**：尽量使用具体数字
+4. **多空平衡**：既要分析利好，也要分析风险
+5. **可操作性**：投资建议要具体、可执行
 """
         return prompt
     
@@ -498,7 +560,7 @@ class SmartCrawlerV2:
             return result['choices'][0]['message']['content']
     
     def parse_evaluation_result(self, response: str) -> Optional[EvaluationResult]:
-        """解析评估结果"""
+        """解析评估结果 V2.2"""
         try:
             # 提取 JSON
             json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
@@ -510,7 +572,8 @@ class SmartCrawlerV2:
                     sufficiency=data.get('sufficiency', ''),
                     need_more_crawl=data.get('need_more_crawl', False),
                     crawl_suggestions=data.get('crawl_suggestions', {}),
-                    quality_assessment=data.get('quality_assessment', {})
+                    quality_assessment=data.get('quality_assessment', {}),
+                    financial_bonus=data.get('financial_bonus', 0)  # V2.2 新增
                 )
         except Exception as e:
             print(f"  解析评估结果失败: {e}")
@@ -578,6 +641,9 @@ class SmartCrawlerV2:
             if evaluation_result:
                 print(f"\n  评估结果:")
                 print(f"    总分: {evaluation_result.total_score}/200")
+                if evaluation_result.financial_bonus > 0:
+                    print(f"    财务数据加分: +{evaluation_result.financial_bonus}分")
+                    print(f"    综合得分: {evaluation_result.total_score + evaluation_result.financial_bonus}/210")
                 print(f"    充分性: {evaluation_result.sufficiency}")
                 print(f"    是否继续: {'是' if evaluation_result.need_more_crawl else '否'}")
                 
@@ -588,15 +654,16 @@ class SmartCrawlerV2:
                     bar = '█' * (score // 5)
                     print(f"    {topic}: {score:2d}分 {bar}")
                 
-                # 决策：评分>=150即可终止
-                if evaluation_result.total_score >= 150:
-                    print("\n  ✅ 信息充分（>=150分），进入深度分析...")
+                # 决策：评分>=150即可终止（包含财务加分）
+                effective_score = evaluation_result.total_score + evaluation_result.financial_bonus
+                if effective_score >= 150:
+                    print(f"\n  ✅ 信息充分（{effective_score}分 >= 150），进入深度分析...")
                     break
                 elif round_num >= max_rounds:
                     print("\n  ⚠️ 达到最大轮次，强制进入分析...")
                     break
                 else:
-                    print(f"\n  🔄 信息不足（{evaluation_result.total_score}/200 < 150），继续爬取...")
+                    print(f"\n  🔄 信息不足（{effective_score}/210 < 150），继续爬取...")
                     time.sleep(2)
             else:
                 print("\n  ⚠️ 评估解析失败，继续下一轮...")
@@ -936,8 +1003,39 @@ def main():
     
     # 保存报告
     report_path = output_dir / f'{args.symbol}_smart_v2_report_{timestamp}.md'
+    
+    # V2.2: 追加多年 ROIC 表格（如果有）
+    report_content = result['report']
+    yearly_roic = result.get('financial_data', {}).get('yearly_roic', [])
+    if yearly_roic:
+        roic_section = """
+
+---
+
+## 附录：多年财务数据（AkShare）
+
+### ROIC（投入资本回报率）趋势
+
+| 年份 | ROIC(%) | NOPAT(亿) | 投入资本(亿) | 净利润(亿) | 营收(亿) |
+|------|---------|-----------|-------------|-----------|----------|
+"""
+        for row in yearly_roic:
+            roic_section += f"| {int(row.get('year', 0))} | {row.get('roic', 0):.2f} | {row.get('nopat', 0):.2f} | {row.get('invested_capital', 0):.2f} | {row.get('net_profit', 0):.2f} | {row.get('revenue', 0):.2f} |\n"
+        
+        roic_section += """
+**ROIC 分析**：
+- ROIC > 15%：优秀，公司创造了显著的经济价值
+- ROIC 10-15%：良好，资本回报率健康  
+- ROIC < 10%：需关注，可能存在资本效率问题
+- ROIC < WACC（约8%）：公司可能正在破坏价值
+
+*数据来源：AkShare*
+"""
+        report_content += roic_section
+        print(f"  ✅ 已追加 ROIC 表格（{len(yearly_roic)}年数据）")
+    
     with open(report_path, 'w', encoding='utf-8') as f:
-        f.write(result['report'])
+        f.write(report_content)
     print(f"\n  报告已保存: {report_path}")
     
     # 生成并保存评估报告（含爬取清单）
@@ -969,6 +1067,93 @@ def main():
     with open(data_path, 'w', encoding='utf-8') as f:
         json.dump(full_data, f, ensure_ascii=False, indent=2)
     print(f"  数据已保存: {data_path}")
+    
+    # ============ 新增：自动上传 Gist 并发送飞书 ============
+    print("\n" + "="*60)
+    print("上传报告到 Gist...")
+    print("="*60)
+    
+    import subprocess
+    
+    gist_urls = {}
+    
+    # 上传分析报告到 Gist
+    try:
+        result_gist = subprocess.run(
+            ['gh', 'gist', 'create', str(report_path), 
+             '--desc', f'{args.symbol} 投资价值分析报告 - {time.strftime("%Y-%m-%d")}'],
+            capture_output=True, text=True, timeout=30
+        )
+        if result_gist.returncode == 0:
+            gist_urls['report'] = result_gist.stdout.strip()
+            print(f"  ✅ 分析报告: {gist_urls['report']}")
+        else:
+            print(f"  ❌ 上传分析报告失败: {result_gist.stderr}")
+    except Exception as e:
+        print(f"  ❌ 上传分析报告异常: {e}")
+    
+    # 上传评估报告到 Gist
+    if result.get('evaluation'):
+        try:
+            result_gist = subprocess.run(
+                ['gh', 'gist', 'create', str(eval_path),
+                 '--desc', f'{args.symbol} 信息充分性评估报告 - {time.strftime("%Y-%m-%d")}'],
+                capture_output=True, text=True, timeout=30
+            )
+            if result_gist.returncode == 0:
+                gist_urls['evaluation'] = result_gist.stdout.strip()
+                print(f"  ✅ 评估报告: {gist_urls['evaluation']}")
+            else:
+                print(f"  ❌ 上传评估报告失败: {result_gist.stderr}")
+        except Exception as e:
+            print(f"  ❌ 上传评估报告异常: {e}")
+    
+    # 发送飞书消息
+    if gist_urls:
+        print("\n" + "="*60)
+        print("发送飞书通知...")
+        print("="*60)
+        
+        eval_score = result.get('evaluation', {}).get('total_score', 0)
+        sufficiency = result.get('evaluation', {}).get('sufficiency', '-')
+        
+        feishu_message = f"""📊 **{args.symbol} 雪球分析完成**
+
+**评分**: {eval_score}/200 分
+**充分性**: {sufficiency}
+
+---
+
+**报告链接：**
+"""
+        
+        if gist_urls.get('report'):
+            feishu_message += f"\n📊 分析报告: {gist_urls['report']}"
+        if gist_urls.get('evaluation'):
+            feishu_message += f"\n📋 评估报告: {gist_urls['evaluation']}"
+        
+        # 写入待发送文件（由心跳检测发送）
+        feishu_data = {
+            "channel": "feishu",
+            "target": "user:ou_ee151ea315a2f4bce49f9e235fcebcfd",
+            "message": feishu_message
+        }
+        
+        feishu_file = Path('/tmp/pending_feishu_xueqiu_analysis.json')
+        with open(feishu_file, 'w', encoding='utf-8') as f:
+            json.dump(feishu_data, f, ensure_ascii=False, indent=2)
+        
+        print(f"  ✅ 飞书消息已准备: {feishu_file}")
+        print(f"\n  📋 消息预览:")
+        print("  " + "-"*50)
+        for line in feishu_message.split('\n')[:10]:
+            print(f"  {line}")
+        if len(feishu_message.split('\n')) > 10:
+            print("  ...")
+    
+    print("\n" + "="*60)
+    print("分析完成！")
+    print("="*60)
 
 
 if __name__ == '__main__':

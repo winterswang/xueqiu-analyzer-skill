@@ -1,7 +1,7 @@
 ---
 name: xueqiu-analyzer
-description: 雪球公司分析 Skill V2 - 自动化分析雪球文章中提及的上市公司，生成投资价值分析报告
-version: 2.1.0
+description: 雪球公司分析 Skill V2.2 - 自动化分析雪球文章中提及的上市公司，生成投资价值分析报告。支持多年ROIC财务数据。
+version: 2.2.0
 author: winterswang
 triggers:
   - pattern: "雪球分析 {symbol}"
@@ -12,21 +12,17 @@ triggers:
     command: "python3 /root/.openclaw/workspace/xueqiu-analyzer-skill/scripts/smart_crawler_v2.py {symbol}"
 ---
 
-# 雪球公司分析 Skill V2
+# 雪球公司分析 Skill V2.2
 
 自动化分析雪球文章中提及的上市公司，结合多数据源生成结构化的投资价值分析报告。
 
-## 使用方式
+## V2.2 更新（2026-03-08）
 
-直接在对话中说：
-- `雪球分析 TCOM`
-- `分析 雪球 AAPL`
-- `分析AAPL雪球`
-
-系统会自动：
-1. 爬取该股票的讨论、资讯、公告、文章
-2. 评估信息充分性（如不足会继续爬取，最多10轮）
-3. 生成深度分析报告
+| 新增功能 | 描述 |
+|----------|------|
+| **多年ROIC数据** | 集成 akshare_service，获取5年ROIC趋势 |
+| **财务数据加分项** | 有多年财务数据额外+10分 |
+| **财务数据表格** | Prompt 2 新增5年ROIC表格展示 |
 
 ## V2.1 更新（2026-03-07）
 
@@ -58,11 +54,23 @@ triggers:
 
 ### 输出文件
 
-每次分析生成 4 个文件：
-1. `{股票}_evaluation_*.md` - 评估报告（Prompt 1）
-2. `{股票}_smart_v2_report_*.md` - 分析报告（Prompt 2）
-3. `{股票}_smart_v2_data_*.json` - 完整数据（含评估结果）
-4. 两个 Gist 链接（公开可访问）
+每次分析完成后自动执行：
+
+1. **生成本地文件**：
+   - `{股票}_evaluation_*.md` - 评估报告（Prompt 1）
+   - `{股票}_smart_v2_report_*.md` - 分析报告（Prompt 2）
+   - `{股票}_smart_v2_data_*.json` - 完整数据（含评估结果）
+
+2. **上传 Gist**（自动）：
+   - 分析报告 Gist 链接
+   - 评估报告 Gist 链接
+
+3. **发送飞书通知**（自动）：
+   - 包含评分、充分性、两个 Gist 链接
+   - 消息写入 `/tmp/pending_feishu_xueqiu_analysis.json`
+   - 由心跳检测自动发送
+
+**重要：AI 必须在分析完成后立即输出 Gist 链接给用户，不要等待用户追问。**
 
 ## 🎉 V2 新增功能
 
