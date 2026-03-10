@@ -1,0 +1,29 @@
+# 雪球目标用户配置
+# 这些用户的内容将被爬取用于分析
+
+users:
+  - id: "9507152383"
+    name: "黑色面包"
+    url: "https://xueqiu.com/u/9507152383"
+    tags: ["价值投资", "深度分析"]
+    priority: 1
+    added_at: "2026-03-10"
+  
+  - id: "1786904335"
+    name: "晚点LatePost"
+    url: "https://xueqiu.com/u/1786904335"
+    tags: ["科技媒体", "行业分析"]
+    priority: 1
+    added_at: "2026-03-10"
+
+# 用户内容类型配置
+content_types:
+  - articles      # 原创
+  - discussions   # 讨论
+  - comments      # 评论
+  
+# 爬取配置
+crawl_config:
+  max_articles_per_user: 10
+  max_discussions_per_user: 5
+  include_comments: false
