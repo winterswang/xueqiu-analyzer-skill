@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
 """
-雪球股票详情页爬虫 v2
+雪球股票详情页爬虫 v2.1
+
+改造说明：
+1. 默认配置路径改为 ~/.xueqiu_crawler/（更通用）
+2. 支持首次初始化（自动创建配置目录）
+3. 独立可用，无需其他依赖文件
 
 解决问题：
 1. 登录弹窗拦截 - 自动关闭
 2. 滚动加载 - 使用正确的方式
 3. Tab 切换 - 使用 JavaScript 点击绕过遮罩
+
+使用方式：
+    # 命令行
+    python3 stock_crawler_v2.py 00700
+    
+    # Python 调用
+    from stock_crawler_v2 import XueqiuStockCrawlerV2
+    crawler = XueqiuStockCrawlerV2()
+    result = crawler.crawl("00700")
 """
 
 import os
@@ -93,12 +107,34 @@ class StockInfo:
 
 
 class XueqiuStockCrawlerV2:
-    """雪球股票详情页爬虫 v2"""
+    """雪球股票详情页爬虫 v2.1
     
-    def __init__(self, headless: bool = True, cookies_path: str = None, credentials_path: str = None):
+    支持独立调用，配置文件默认存放在 ~/.xueqiu_crawler/
+    """
+    
+    # 默认配置目录
+    DEFAULT_CONFIG_DIR = os.path.expanduser('~/.xueqiu_crawler')
+    
+    def __init__(self, headless: bool = True, cookies_path: str = None, credentials_path: str = None, config_dir: str = None):
+        """
+        初始化爬虫
+        
+        Args:
+            headless: 是否无头模式
+            cookies_path: cookies 文件路径（默认 ~/.xueqiu_crawler/cookies.json）
+            credentials_path: 凭据文件路径（默认 ~/.xueqiu_crawler/credentials.yaml）
+            config_dir: 配置目录（默认 ~/.xueqiu_crawler）
+        """
         self.headless = headless
-        self.cookies_path = cookies_path or os.path.expanduser('~/.openclaw/workspace/xueqiu-analyzer-skill/config/xueqiu_cookies.json')
-        self.credentials_path = credentials_path or os.path.expanduser('~/.openclaw/workspace/xueqiu-analyzer-skill/config/xueqiu_credentials.yaml')
+        self.config_dir = config_dir or self.DEFAULT_CONFIG_DIR
+        
+        # 确保配置目录存在
+        os.makedirs(self.config_dir, exist_ok=True)
+        
+        # 配置文件路径
+        self.cookies_path = cookies_path or os.path.join(self.config_dir, 'cookies.json')
+        self.credentials_path = credentials_path or os.path.join(self.config_dir, 'credentials.yaml')
+        
         self.credentials = self._load_credentials()
         self.logger = self._setup_logger()
         
