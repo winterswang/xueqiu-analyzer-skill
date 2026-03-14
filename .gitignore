@@ -51,3 +51,5 @@ logs/*.log
 config/xueqiu_credentials.yaml
 config/xueqiu_credentials.yaml
 config/xueqiu_cookies.json
+data/reports/*.md
+data/reports/*.json
