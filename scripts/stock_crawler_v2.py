@@ -209,6 +209,21 @@ class XueqiuStockCrawlerV2:
     def _check_login_status(self, page: Page) -> bool:
         """检查是否已登录"""
         try:
+            # 首先检查是否是验证页面
+            page_title = page.title().lower()
+            if 'verification' in page_title or '验证' in page_title:
+                self.logger.warning("检测到验证页面，未真正登录")
+                return False
+            
+            # 检查页面内容是否有验证相关元素
+            verification_patterns = page.evaluate('''() => {
+                const text = document.body.innerText;
+                return text.includes('验证') || text.includes('微信扫码') || text.includes('滑动');
+            }''')
+            if verification_patterns:
+                self.logger.warning("检测到验证页面内容，未真正登录")
+                return False
+            
             # 检查是否有用户头像/名称（已登录状态）
             user_elem = page.query_selector('.nav__user, .user-avatar, .username, .topbar__user')
             if user_elem:
@@ -234,8 +249,8 @@ class XueqiuStockCrawlerV2:
                     }
                 }
                 
-                // 默认返回 true（假设已登录）
-                return true;
+                // 默认返回 false（不确定时视为未登录）
+                return false;
             }''')
             
             return is_logged_in
@@ -750,7 +765,7 @@ class XueqiuStockCrawlerV2:
                 return items;
             }''')
             
-            for item in notice_items[:10]:
+            for item in notice_items[:15]:  # 最多获取15条
                 notices.append(Notice(
                     title=item.get('title', '公告'),
                     link=item.get('link', ''),
@@ -817,7 +832,7 @@ class XueqiuStockCrawlerV2:
             return None
     
     def crawl(self, symbol: str, max_discussions: int = 20, max_news: int = 20, 
-              max_articles: int = 10, max_scrolls: int = 10) -> StockInfo:
+              max_articles: int = 10, max_scrolls: int = 10, start_offset: int = 0) -> StockInfo:
         """
         爬取股票详情页数据
         
@@ -827,6 +842,7 @@ class XueqiuStockCrawlerV2:
             max_news: 最大资讯数
             max_articles: 最大文章数
             max_scrolls: 最大滚动次数
+            start_offset: 跳过前N条数据，用于分页获取
             
         Returns:
             StockInfo: 股票信息
@@ -886,8 +902,8 @@ class XueqiuStockCrawlerV2:
                     # 分页累积加载
                     all_items = self._parse_items_with_pagination(page, max_pages=max_scrolls, target_count=max_discussions)
                     
-                    # 解析累积的讨论
-                    for item in all_items[:max_discussions]:
+                    # 解析累积的讨论 (使用 start_offset 跳过前N条)
+                    for item in all_items[start_offset:start_offset + max_discussions]:
                         try:
                             text = item.inner_text().strip()
                             author_match = re.search(r'^([^\d]+?)(?=\d+小时|\d+天|昨天|今天|\d{4}|\d{2}:\d{2})', text)
@@ -931,7 +947,7 @@ class XueqiuStockCrawlerV2:
                     time.sleep(2)
                     all_items = self._parse_items_with_pagination(page, max_pages=max_scrolls, target_count=max_news)
                     
-                    for item in all_items[:max_news]:
+                    for item in all_items[start_offset:start_offset + max_news]:
                         try:
                             text = item.inner_text().strip()
                             lines = text.split('\n')
@@ -1026,9 +1042,9 @@ class XueqiuStockCrawlerV2:
                             seen_links.add(d.link)
                 
                 if article_links and max_articles > 0:
-                    self.logger.info(f"\n爬取 {min(len(article_links), max_articles)} 篇文章详情...")
+                    self.logger.info(f"\n爬取 {min(len(article_links) - start_offset, max_articles)} 篇文章详情...")
                     
-                    for i, link in enumerate(article_links[:max_articles]):
+                    for i, link in enumerate(article_links[start_offset:start_offset + max_articles]):
                         try:
                             time.sleep(random.uniform(2, 4))
                             article = self._crawl_article_detail(page, link)
