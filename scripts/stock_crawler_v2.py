@@ -60,6 +60,11 @@ class Discussion:
     time: str
     content: str
     link: str = ""
+    comments: List[str] = None  # 评论列表
+    
+    def __post_init__(self):
+        if self.comments is None:
+            self.comments = []
 
 
 @dataclass
@@ -77,7 +82,11 @@ class Notice:
     """公告数据"""
     title: str
     link: str
+    time: str = ""
     id: str = ""
+    ai_summary: str = ""  # AI 摘要 / PDF 链接
+    content: str = ""  # 公告正文内容
+    pdf_link: str = ""  # PDF 下载链接
 
 
 @dataclass
@@ -623,12 +632,18 @@ class XueqiuStockCrawlerV2:
             try:
                 text = item.inner_text().strip()
                 
-                # 提取作者（通常在开头）
-                author_match = re.search(r'^([^\d]+?)(?=\d+小时|\d+天|昨天|今天|\d{4}|\d{2}:\d{2})', text)
+                # 提取作者（格式: "作者名 时间·来自平台")
+                # 匹配从开头到时间之前的作者名
+                author_match = re.search(r'^([^0-9\d][^\d]*(?=\d+小时前|\d+天前|昨天|今天|\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}))', text)
+                if not author_match:
+                    # 备选：尝试匹配到 "·" 之前的内容
+                    author_match = re.search(r'^([^·\n]+)', text)
                 author = author_match.group(1).strip() if author_match else ''
+                # 进一步清理作者名，去除平台信息
+                author = re.sub(r'·来自.*$', '', author).strip()
                 
                 # 提取时间
-                time_match = re.search(r'(\d+小时前|\d+天前|昨天|今天|\d{2}:\d{2}|\d{4}-\d{2}-\d{2})', text)
+                time_match = re.search(r'(\d+小时前|\d+天前|昨天|今天|\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2})', text)
                 time_str = time_match.group(1) if time_match else ''
                 
                 # 提取内容 - 清理元数据
@@ -731,7 +746,7 @@ class XueqiuStockCrawlerV2:
             # 等待公告内容加载
             time.sleep(1)
             
-            # 使用 JavaScript 获取公告列表
+            # 使用 JavaScript 获取公告列表 - 增强版本
             notice_items = page.evaluate('''() => {
                 const items = [];
                 const timelineItems = document.querySelectorAll('.timeline__item');
@@ -740,22 +755,44 @@ class XueqiuStockCrawlerV2:
                     const text = item.innerText || '';
                     const links = item.querySelectorAll('a');
                     
+                    // 查找 PDF 链接
+                    let pdfLink = '';
+                    let noticeLink = '';
+                    
                     for (const link of links) {
                         const href = link.getAttribute('href') || '';
+                        const linkText = link.innerText || '';
+                        
+                        // 查找 PDF 链接
+                        if (href.includes('.pdf') || linkText.includes('PDF') || linkText.includes('pdf')) {
+                            pdfLink = href;
+                        }
+                        
                         // 匹配格式: /S/股票代码/文章ID
                         if (/^\\/S\\/\\w+\\/\\d+$/.test(href)) {
+                            noticeLink = 'https://xueqiu.com' + href;
+                            
                             let title = text.split('\\n')[0] || '公告';
                             // 清理标题
-                            title = title.replace(/^携程\\(TCOM\\)\\d{2}-\\d{2}\\s*\\d{1,2}:\\d{2}·\\s*来自公告\\s*/, '');
-                            title = title.substring(0, 50);
+                            title = title.replace(/^.*?\\d+小时前·\\s*来自.*?\\s*/, '');
+                            title = title.substring(0, 100);
+                            
+                            // 提取公告类型（如果标题中有）
+                            let noticeType = '';
+                            const typeMatch = text.match(/(\[.*?\]|翌日披露报表|已发行股份变动|业绩报告|股东大会)/);
+                            if (typeMatch) {
+                                noticeType = typeMatch[1] || typeMatch[0];
+                            }
                             
                             const idMatch = href.match(/\\/(\\d+)$/);
                             const id = idMatch ? idMatch[1] : '';
                             
                             items.push({
                                 title: title || '公告',
-                                link: 'https://xueqiu.com' + href,
-                                id: id
+                                link: noticeLink,
+                                id: id,
+                                pdf_link: pdfLink,
+                                notice_type: noticeType
                             });
                             break;
                         }
@@ -766,10 +803,24 @@ class XueqiuStockCrawlerV2:
             }''')
             
             for item in notice_items[:15]:  # 最多获取15条
+                # 从标题中提取时间 (格式如: "腾讯控股(00700)昨天 09:00· 来自公告")
+                title = item.get('title', '公告')
+                time_match = re.search(r'(\d+小时前|\d+天前|昨天|今天|\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2})', title)
+                time_str = time_match.group(1) if time_match else ''
+                
+                # 组合更丰富的标题信息
+                notice_type = item.get('notice_type', '')
+                if notice_type and notice_type not in title:
+                    full_title = f"{title} [{notice_type}]"
+                else:
+                    full_title = title
+                
                 notices.append(Notice(
-                    title=item.get('title', '公告'),
+                    title=full_title,
                     link=item.get('link', ''),
-                    id=item.get('id', '')
+                    time=time_str,
+                    id=item.get('id', ''),
+                    ai_summary=item.get('pdf_link', '')  # 用 ai_summary 字段暂存 PDF 链接
                 ))
             
             self.logger.info(f"解析公告: 找到 {len(notices)} 条")
@@ -794,9 +845,23 @@ class XueqiuStockCrawlerV2:
                 parts = title.split('-')
                 title = parts[0].strip()
             
-            # 获取作者
-            author_elem = page.query_selector('.article__bd__from a, .user-name, .author-name')
-            author = author_elem.inner_text().strip() if author_elem else ''
+            # 获取作者 - 改进选择器
+            author = ''
+            author_selectors = [
+                '.article__bd__from a',       # 原有选择器
+                '.user-name',                  # 用户名
+                '.author-name',                # 作者名
+                '.article-author a',           # 文章作者链接
+                '.name',                       # 通用名称
+                '[class*="author"]',           # 包含 author 的元素
+                '.article__header .name',     # 文章头部名称
+            ]
+            for selector in author_selectors:
+                author_elem = page.query_selector(selector)
+                if author_elem:
+                    author = author_elem.inner_text().strip()
+                    if author and len(author) > 1:
+                        break
             
             # 获取时间
             time_elem = page.query_selector('.article__bd__from .date, .time, .date')
@@ -829,6 +894,86 @@ class XueqiuStockCrawlerV2:
             
         except Exception as e:
             self.logger.warning(f"爬取文章详情失败 {url}: {e}")
+            return None
+    
+    def _crawl_notice_detail(self, page: Page, url: str) -> Optional[dict]:
+        """爬取公告详情页"""
+        try:
+            page.goto(url, timeout=30000)
+            page.wait_for_timeout(2000)
+            
+            # 关闭可能出现的弹窗
+            self._close_modal(page)
+            
+            # 使用 JavaScript 获取详情
+            detail = page.evaluate('''() => {
+                const result = {
+                    content: '',
+                    pdf_link: '',
+                    source: ''
+                };
+                
+                // 获取正文内容
+                const contentSelectors = [
+                    '.article__bd__detail',
+                    '.status-content',
+                    '.article-content',
+                    'article',
+                    '.detail'
+                ];
+                
+                for (const sel of contentSelectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        result.content = el.innerText.substring(0, 5000);
+                        break;
+                    }
+                }
+                
+                // 如果没有找到，尝试获取 body 中的文本
+                if (!result.content) {
+                    const body = document.body;
+                    // 移除脚本和样式
+                    const scripts = body.querySelectorAll('script, style');
+                    scripts.forEach(s => s.remove());
+                    result.content = body.innerText.substring(0, 5000);
+                }
+                
+                // 查找 PDF 链接
+                const allLinks = Array.from(document.querySelectorAll('a'));
+                for (const link of allLinks) {
+                    const href = link.getAttribute('href');
+                    const text = link.innerText || '';
+                    if (href && (href.includes('.pdf') || href.includes('PDF') || 
+                        text.includes('PDF') || text.includes('pdf') || text.includes('查看PDF'))) {
+                        // 如果是相对路径，补充完整 URL
+                        result.pdf_link = href.startsWith('http') ? href : 'https://xueqiu.com' + href;
+                        break;
+                    }
+                }
+                
+                // 查找来源信息
+                const fromSelectors = [
+                    '.article__bd__from',
+                    '.from',
+                    '.source'
+                ];
+                
+                for (const sel of fromSelectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        result.source = el.innerText.trim();
+                        break;
+                    }
+                }
+                
+                return result;
+            }''')
+            
+            return detail
+            
+        except Exception as e:
+            self.logger.warning(f"爬取公告详情失败 {url}: {e}")
             return None
     
     def crawl(self, symbol: str, max_discussions: int = 20, max_news: int = 20, 
@@ -937,6 +1082,79 @@ class XueqiuStockCrawlerV2:
                             pass
                     
                     self.logger.info(f"获取 {len(stock_info.discussions)} 条讨论")
+                    
+                    # ========== 爬取讨论评论 ==========
+                    if stock_info.discussions:
+                        self.logger.info(f"\n爬取讨论评论...")
+                        for i, disc in enumerate(stock_info.discussions[:10]):  # 最多获取10条讨论的评论
+                            if disc.link and 'xueqiu.com' in disc.link:
+                                try:
+                                    self.logger.info(f"  [{i+1}/{min(len(stock_info.discussions), 10)}] {disc.content[:30]}...")
+                                    detail_page = browser.new_page()
+                                    detail_page.goto(disc.link, timeout=30000)
+                                    time.sleep(1)
+                                    
+                                    # 关闭可能的弹窗
+                                    self._close_modal(detail_page)
+                                    
+                                    # 滚动到页面底部触发评论加载
+                                    detail_page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                                    time.sleep(1)
+                                    
+                                    # 检查评论容器是否为空
+                                    is_empty = detail_page.evaluate("""() => {
+                                        const container = document.querySelector('.comment__container');
+                                        return container ? container.classList.contains('empty') : true;
+                                    }""")
+                                    
+                                    comments = []
+                                    if not is_empty:
+                                        # 获取评论 - 使用 JavaScript 精确提取
+                                        comments = detail_page.evaluate('''() => {
+                                        const comments = [];
+                                        
+                                        // 雪球评论区的多种选择器
+                                        const selectors = [
+                                            '.comment__content',
+                                            '.reply-item .content', 
+                                            '.comment-content',
+                                            '.comment__item .comment__text',
+                                            '[class*="comment__content"]',
+                                            '[class*="comment-text"]',
+                                            '[class*="reply-content"]'
+                                        ];
+                                        
+                                        for (const selector of selectors) {
+                                            const elems = document.querySelectorAll(selector);
+                                            for (const elem of elems) {
+                                                const text = elem.innerText.trim();
+                                                // 过滤无关文本
+                                                if (text.length > 10 && 
+                                                    !text.includes('仅在正文下讨论') &&
+                                                    !text.includes('发布') &&
+                                                    !text.startsWith('回复@') &&
+                                                    !text.includes('来自') &&
+                                                    !text.includes('') &&
+                                                    !text.includes('') &&
+                                                    !text.includes('')) {
+                                                    comments.push(text.substring(0, 300));
+                                                }
+                                                if (comments.length >= 5) break;
+                                            }
+                                            if (comments.length >= 5) break;
+                                        }
+                                        
+                                        return comments;
+                                    }''')
+                                    
+                                    if comments:
+                                        disc.comments = comments
+                                        self.logger.info(f"    获取评论: {len(comments)} 条")
+                                    
+                                    detail_page.close()
+                                    time.sleep(0.5)
+                                except Exception as e:
+                                    self.logger.warning(f"    获取评论失败: {e}")
                 
                 # ========== 爬取资讯 ==========
                 self.logger.info("\n" + "="*50)
@@ -1028,6 +1246,34 @@ class XueqiuStockCrawlerV2:
                     time.sleep(2)
                     stock_info.notices = self._parse_notices(page)
                     self.logger.info(f"获取 {len(stock_info.notices)} 条公告")
+                    
+                    # 爬取公告详情（PDF 链接、正文内容）
+                    if stock_info.notices:
+                        self.logger.info(f"\n爬取公告详情...")
+                        # 创建新页面访问公告详情
+                        detail_page = context.new_page()
+                        
+                        for i, notice in enumerate(stock_info.notices[:3]):  # 最多爬取前3条详情
+                            try:
+                                time.sleep(random.uniform(1, 2))
+                                detail = self._crawl_notice_detail(detail_page, notice.link)
+                                if detail:
+                                    notice.content = detail.get('content', '')[:2000]
+                                    notice.pdf_link = detail.get('pdf_link', '')
+                                    
+                                    # 如果有来源信息，加到标题中
+                                    source = detail.get('source', '')
+                                    if source and source not in notice.title:
+                                        notice.title = f"{notice.title} - {source}"
+                                    
+                                    if notice.pdf_link:
+                                        self.logger.info(f"  [{i+1}] PDF: {notice.pdf_link[:60]}...")
+                                    else:
+                                        self.logger.info(f"  [{i+1}] {notice.title[:40]}...")
+                            except Exception as e:
+                                self.logger.warning(f"  [{i+1}] 详情获取失败: {e}")
+                        
+                        detail_page.close()
                 
                 # ========== 爬取文章详情 ==========
                 # 从讨论中提取文章链接
