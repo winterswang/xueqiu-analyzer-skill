@@ -5,11 +5,11 @@ version: 2.2.0
 author: winterswang
 triggers:
   - pattern: "雪球分析 {symbol}"
-    command: "python3 /root/.openclaw/workspace/xueqiu-analyzer-skill/scripts/smart_crawler_v2.py {symbol}"
+    command: "python3 scripts/smart_crawler_v2.py {symbol}"
   - pattern: "分析 雪球 {symbol}"
-    command: "python3 /root/.openclaw/workspace/xueqiu-analyzer-skill/scripts/smart_crawler_v2.py {symbol}"
+    command: "python3 scripts/smart_crawler_v2.py {symbol}"
   - pattern: "分析{symbol}雪球"
-    command: "python3 /root/.openclaw/workspace/xueqiu-analyzer-skill/scripts/smart_crawler_v2.py {symbol}"
+    command: "python3 scripts/smart_crawler_v2.py {symbol}"
 ---
 
 # 雪球公司分析 Skill V2.2

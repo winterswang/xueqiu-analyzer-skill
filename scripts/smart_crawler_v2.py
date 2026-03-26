@@ -30,6 +30,14 @@ from stock_crawler_v2 import XueqiuStockCrawlerV2
 from financial_fetcher import FinancialDataFetcher
 
 
+# ============ 常量定义 ============
+SCORE_THRESHOLD = 150  # 评分终止阈值
+MAX_ROUNDS_DEFAULT = 10  # 默认最大爬取轮次
+API_TIMEOUT_SECONDS = 1800  # API 超时时间（30分钟）
+MAX_TOKENS_EVALUATION = 2000  # 评估 prompt 最大 token
+MAX_TOKENS_ANALYSIS = 8000  # 分析 prompt 最大 token
+
+
 @dataclass
 class EvaluationResult:
     """评估结果 V2.2"""
@@ -527,34 +535,55 @@ class SmartCrawlerV2:
     def call_llm(self, prompt: str, max_tokens: int = 4000) -> str:
         """调用 LLM"""
         import urllib.request
-        
-        config_path = os.path.expanduser('~/.openclaw/openclaw.json')
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        
-        provider = config.get('models', {}).get('providers', {}).get('qwencode', {})
-        api_key = provider.get('apiKey', '')
-        base_url = provider.get('baseUrl', '')
-        
+
+        # 多源获取 API Key（按优先级）
+        api_key = (
+            os.environ.get('BAILIAN_API_KEY') or
+            os.environ.get('DASHSCOPE_API_KEY') or
+            os.environ.get('OPENAI_API_KEY', '')
+        )
+        base_url = os.environ.get('CLAWLY_MODEL_GATEWAY_BASE', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+
+        # 从配置文件获取（作为 fallback）
+        if not api_key:
+            config_path = os.path.expanduser('~/.openclaw/openclaw.json')
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                    providers = config.get('models', {}).get('providers', {})
+                    # 尝试多个 provider 名称
+                    for name in ['modelstudio', 'clawly-model-gateway', 'qwencode', 'qwen']:
+                        provider = providers.get(name, {})
+                        if provider.get('apiKey'):
+                            api_key = provider['apiKey']
+                            base_url = provider.get('baseUrl', base_url)
+                            break
+                except Exception as e:
+                    print(f"  ⚠️ 读取配置文件失败: {e}")
+
+        if not api_key:
+            raise ValueError("未找到 API Key，请设置 BAILIAN_API_KEY 环境变量或在 openclaw.json 中配置")
+
         data = {
             "model": "glm-5",
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": 0.7
         }
-        
+
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
-        
+
         req = urllib.request.Request(
             f"{base_url}/chat/completions",
             data=json.dumps(data).encode('utf-8'),
             headers=headers,
             method='POST'
         )
-        
+
         with urllib.request.urlopen(req, timeout=1800) as resp:
             result = json.loads(resp.read().decode('utf-8'))
             return result['choices'][0]['message']['content']
@@ -588,7 +617,7 @@ class SmartCrawlerV2:
         print(f"\n{'='*60}")
         print(f"智能迭代爬取系统 V2: {self.symbol}")
         print(f"{'='*60}")
-        print(f"配置: 最大轮次={max_rounds}, 超时=30分钟, 终止分数>=150")
+        print(f"配置: 最大轮次={max_rounds}, 超时={API_TIMEOUT_SECONDS//60}分钟, 终止分数>={SCORE_THRESHOLD}")
         
         # 获取财务数据（一次性）
         print("\n[准备] 获取财务数据...")
@@ -633,7 +662,7 @@ class SmartCrawlerV2:
             print(f"     总计: ~{prompt_tokens} tokens")
             print(f"  Prompt 长度: {prompt_chars} 字符")
             
-            eval_response = self.call_llm(eval_prompt, max_tokens=2000)
+            eval_response = self.call_llm(eval_prompt, max_tokens=MAX_TOKENS_EVALUATION)
             
             # 解析结果
             evaluation_result = self.parse_evaluation_result(eval_response)
@@ -654,16 +683,16 @@ class SmartCrawlerV2:
                     bar = '█' * (score // 5)
                     print(f"    {topic}: {score:2d}分 {bar}")
                 
-                # 决策：评分>=150即可终止（包含财务加分）
+                # 决策：评分>=阈值即可终止（包含财务加分）
                 effective_score = evaluation_result.total_score + evaluation_result.financial_bonus
-                if effective_score >= 150:
-                    print(f"\n  ✅ 信息充分（{effective_score}分 >= 150），进入深度分析...")
+                if effective_score >= SCORE_THRESHOLD:
+                    print(f"\n  ✅ 信息充分（{effective_score}分 >= {SCORE_THRESHOLD}），进入深度分析...")
                     break
                 elif round_num >= max_rounds:
                     print("\n  ⚠️ 达到最大轮次，强制进入分析...")
                     break
                 else:
-                    print(f"\n  🔄 信息不足（{effective_score}/210 < 150），继续爬取...")
+                    print(f"\n  🔄 信息不足（{effective_score}/210 < {SCORE_THRESHOLD}），继续爬取...")
                     time.sleep(2)
             else:
                 print("\n  ⚠️ 评估解析失败，继续下一轮...")
@@ -687,7 +716,7 @@ class SmartCrawlerV2:
         print(f"\n  Prompt 长度: {prompt_chars} 字符 (~{prompt_chars*2} tokens)")
         
         print("\n  调用 GLM-5 分析...")
-        report = self.call_llm(analysis_prompt, max_tokens=8000)
+        report = self.call_llm(analysis_prompt, max_tokens=MAX_TOKENS_ANALYSIS)
         
         return {
             'symbol': self.symbol,
@@ -704,144 +733,6 @@ class SmartCrawlerV2:
                 'prompt_tokens': prompt_chars * 2
             }
         }
-
-
-def generate_evaluation_report(result: dict) -> str:
-    """生成包含爬取清单的评估报告"""
-    from datetime import datetime
-    
-    eval_data = result.get('evaluation', {})
-    symbol = result.get('symbol', 'UNKNOWN')
-    
-    report = f'''# {symbol} 信息充分性评估报告
-
-**评估时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-**股票代码**: {symbol}
-**总分**: {eval_data.get('total_score', 0)}/200
-**充分性**: {eval_data.get('sufficiency', '-')}
-
----
-
-## 一、各主题评分详情
-
-'''
-    
-    scores = eval_data.get('scores', {})
-    for topic, sdata in scores.items():
-        score = sdata.get('score', 0)
-        reason = sdata.get('reason', '')
-        evidence = sdata.get('evidence', '')
-        bar = '█' * (score // 5)
-        
-        report += f'''### {topic} - {score}分 {bar}
-
-**评分理由**: {reason}
-
-**原文证据**: {evidence}
-
----
-
-'''
-    
-    # 质量评估
-    quality = eval_data.get('quality_assessment', {})
-    report += f'''## 二、质量评估
-
-| 维度 | 评估 |
-|------|------|
-| 信息来源可靠性 | {quality.get('source_reliability', '-')} |
-| 观点多样性 | {quality.get('viewpoint_diversity', '-')} |
-| 深度文章数 | {quality.get('deep_articles_count', '-')} 篇 |
-
-'''
-    
-    # 覆盖分析
-    coverage = eval_data.get('coverage_analysis', {})
-    report += f'''## 三、内容覆盖分析
-
-**优势领域**: {', '.join(coverage.get('strengths', []))}
-
-**缺口领域**: {', '.join(coverage.get('gaps', [])) if coverage.get('gaps') else '无'}
-
-'''
-    
-    # 爬取内容清单
-    report += '''## 四、爬取内容清单
-
-'''
-    
-    # 文章清单
-    articles = result.get('articles', [])
-    report += f'''### 专栏文章（{len(articles)}篇）
-
-| # | 标题 | 作者 | 链接 |
-|---|------|------|------|
-'''
-    for i, a in enumerate(articles, 1):
-        title = a.get('title', '无标题')[:40]
-        author = a.get('author', '未知')[:15]
-        link = a.get('link', '')
-        report += f'| {i} | {title}... | {author} | [查看]({link}) |\n'
-    
-    # 讨论清单
-    discussions = result.get('discussions', [])
-    report += f'''
-### 热门讨论（{len(discussions)}条）
-
-| # | 作者 | 内容摘要 | 链接 |
-|---|------|----------|------|
-'''
-    for i, d in enumerate(discussions, 1):
-        author = d.get('author', '未知')[:15]
-        content = d.get('content', '')[:50]
-        link = d.get('link', '')
-        report += f'| {i} | {author} | {content}... | [查看]({link}) |\n'
-    
-    # 资讯清单
-    news = result.get('news', [])
-    report += f'''
-### 相关资讯（{len(news)}条）
-
-| # | 标题 | 时间 | 链接 |
-|---|------|------|------|
-'''
-    for i, n in enumerate(news, 1):
-        title = n.get('title', '无标题')[:40]
-        time_str = n.get('time', '')
-        link = n.get('link', '')
-        report += f'| {i} | {title}... | {time_str} | [查看]({link}) |\n'
-    
-    # 公告清单
-    notices = result.get('notices', [])
-    report += f'''
-### 公告（{len(notices)}条）
-
-| # | 标题 | 链接 |
-|---|------|------|
-'''
-    for i, n in enumerate(notices, 1):
-        title = n.get('title', '公告')[:50]
-        link = n.get('link', '')
-        report += f'| {i} | {title} | [查看]({link}) |\n'
-    
-    # 爬取建议
-    crawl = eval_data.get('crawl_suggestions', {})
-    report += f'''
-## 五、爬取建议
-
-| 项目 | 建议 |
-|------|------|
-| 是否需要继续爬取 | {'否' if not eval_data.get('need_more_crawl', True) else '是'} |
-| 优先类型 | {', '.join(crawl.get('priority', []))} |
-| 关注主题 | {', '.join(crawl.get('focus_topics', [])) if crawl.get('focus_topics') else '无'} |
-| 原因 | {crawl.get('reason', '-')} |
-
----
-
-**结论**: 总分 {eval_data.get('total_score', 0)}/200，{eval_data.get('sufficiency', '')}，进入深度分析阶段。
-'''
-    
-    return report
 
 
 def generate_evaluation_report(result: dict) -> str:
@@ -1133,9 +1024,10 @@ def main():
             feishu_message += f"\n📋 评估报告: {gist_urls['evaluation']}"
         
         # 写入待发送文件（由心跳检测发送）
+        feishu_target = os.environ.get('FEISHU_TARGET_USER', 'user:ou_ee151ea315a2f4bce49f9e235fcebcfd')
         feishu_data = {
             "channel": "feishu",
-            "target": "user:ou_ee151ea315a2f4bce49f9e235fcebcfd",
+            "target": feishu_target,
             "message": feishu_message
         }
         

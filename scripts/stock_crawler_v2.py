@@ -263,7 +263,8 @@ class XueqiuStockCrawlerV2:
             }''')
             
             return is_logged_in
-        except:
+        except Exception as e:
+            self.logger.warning(f"检查登录状态失败: {e}")
             return False
     
     def _login(self, page: Page) -> bool:
@@ -428,7 +429,8 @@ class XueqiuStockCrawlerV2:
                         time.sleep(0.5)
                         self.logger.info("点击关闭按钮成功")
                         return True
-                    except:
+                    except Exception as e:
+                        self.logger.debug(f"点击关闭按钮失败: {e}")
                         pass
                 
                 # 方法2: 使用 JavaScript 关闭
@@ -529,7 +531,7 @@ class XueqiuStockCrawlerV2:
                 # 等待内容加载
                 try:
                     page.wait_for_selector('.timeline__item', timeout=5000)
-                except:
+                except Exception:
                     pass
                 page_num += 1
             else:
@@ -583,7 +585,7 @@ class XueqiuStockCrawlerV2:
                 time.sleep(2)
                 try:
                     page.wait_for_selector('.timeline__item', timeout=5000)
-                except:
+                except Exception:
                     pass
                 page_num += 1
             else:
@@ -606,7 +608,7 @@ class XueqiuStockCrawlerV2:
                 # 等待内容加载
                 try:
                     page.wait_for_selector('.timeline__item', timeout=5000)
-                except:
+                except Exception:
                     pass
                 
                 # 再次检查弹窗

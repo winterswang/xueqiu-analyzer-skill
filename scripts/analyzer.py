@@ -17,7 +17,7 @@ from pathlib import Path
 # 添加脚本目录到 path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from stock_crawler import XueqiuStockCrawler
+from stock_crawler_v2 import XueqiuStockCrawlerV2 as XueqiuStockCrawler
 from report_generator import ReportGenerator
 
 
@@ -28,12 +28,14 @@ class XueqiuAnalyzer:
         self.crawler = XueqiuStockCrawler(headless=headless)
         self.report_generator = ReportGenerator(api_key=api_key)
     
-    def analyze(self, symbol: str, max_discussions: int = 10, max_news: int = 10) -> str:
+    def analyze(self, stock_name: str, stock_code: str, market: str = 'cn', max_discussions: int = 10, max_news: int = 10) -> str:
         """
         分析股票
         
         Args:
-            symbol: 股票代码
+            stock_name: 股票名称 (如 "腾讯")
+            stock_code: 股票代码 (如 "00700", "AAPL")
+            market: 市场 (hk/cn/us)
             max_discussions: 最大讨论数
             max_news: 最大资讯数
             
@@ -41,16 +43,17 @@ class XueqiuAnalyzer:
             Markdown 格式的分析报告
         """
         print(f"\n{'='*60}")
-        print(f"雪球公司分析 - {symbol}")
+        print(f"雪球公司分析 - {stock_name}")
         print(f"{'='*60}\n")
         
         # 1. 爬取数据
         print("📌 步骤 1/2: 爬取股票数据...")
+        
         stock_info = self.crawler.crawl(
-            symbol=symbol,
+            symbol=stock_code,  # 使用股票代码
             max_discussions=max_discussions,
             max_news=max_news,
-            max_articles=5  # 新增：爬取5篇专栏文章
+            max_articles=5
         )
         stock_data = self.crawler.to_dict(stock_info)
         

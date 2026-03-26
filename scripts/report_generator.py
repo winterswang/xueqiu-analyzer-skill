@@ -32,15 +32,19 @@ from report_template import (
 
 class GLM5Analyzer:
     """GLM-5 分析器"""
-    
+
     def __init__(self, api_key: str = None):
-        # 优先使用传入的 key，然后环境变量，最后从 openclaw.json 读取
+        # 多源获取 API Key（按优先级）
         if not api_key:
-            api_key = os.environ.get('BAILIAN_API_KEY', '')
-        
-        # 从 openclaw.json 读取配置
-        self.base_url = "https://coding.dashscope.aliyuncs.com/v1"
-        
+            api_key = (
+                os.environ.get('BAILIAN_API_KEY') or
+                os.environ.get('DASHSCOPE_API_KEY') or
+                os.environ.get('OPENAI_API_KEY', '')
+            )
+
+        self.base_url = os.environ.get('CLAWLY_MODEL_GATEWAY_BASE', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+
+        # 从 openclaw.json 读取配置（作为 fallback）
         if not api_key:
             try:
                 config_path = os.path.expanduser('~/.openclaw/openclaw.json')
@@ -48,12 +52,17 @@ class GLM5Analyzer:
                     import json as json_module
                     with open(config_path, 'r') as f:
                         config = json_module.load(f)
-                        provider = config.get('models', {}).get('providers', {}).get('qwencode', {})
-                        api_key = provider.get('apiKey', '')
-                        self.base_url = provider.get('baseUrl', self.base_url)
-            except:
+                    providers = config.get('models', {}).get('providers', {})
+                    # 尝试多个 provider 名称
+                    for name in ['modelstudio', 'clawly-model-gateway', 'qwencode', 'qwen']:
+                        provider = providers.get(name, {})
+                        if provider.get('apiKey'):
+                            api_key = provider['apiKey']
+                            self.base_url = provider.get('baseUrl', self.base_url)
+                            break
+            except Exception:
                 pass
-        
+
         self.api_key = api_key
         self.api_url = f"{self.base_url}/chat/completions"
         
@@ -63,7 +72,7 @@ class GLM5Analyzer:
             raise ValueError("未配置 BAILIAN_API_KEY")
         
         data = {
-            "model": "glm-5",
+            "model": "qwen3.5-plus",
             "messages": [
                 {"role": "system", "content": "你是一位专业的投资分析助手，擅长分析股票投资价值。请用中文回答，输出结构化的分析报告。"},
                 {"role": "user", "content": prompt}

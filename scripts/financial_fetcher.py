@@ -16,8 +16,19 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 
-# 添加 akshare_docs 到路径
-sys.path.insert(0, '/root/.openclaw/workspace/akshare_docs')
+# 添加 akshare_docs 到路径（带检查）
+try:
+    from scripts.config import AKSHARE_DOCS_PATH
+    if AKSHARE_DOCS_PATH.exists():
+        sys.path.insert(0, str(AKSHARE_DOCS_PATH))
+except ImportError:
+    # 尝试从当前目录导入
+    try:
+        from config import AKSHARE_DOCS_PATH
+        if AKSHARE_DOCS_PATH.exists():
+            sys.path.insert(0, str(AKSHARE_DOCS_PATH))
+    except ImportError:
+        pass  # akshare_docs 不可用，跳过
 
 
 @dataclass
