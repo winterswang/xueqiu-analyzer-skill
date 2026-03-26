@@ -580,7 +580,7 @@ class SmartCrawlerV2:
             base_url = DEFAULT_BASE_URL
 
         data = {
-            "model": "qwen3.5-plus",  # 百炼支持的模型
+            "model": "glm-5",  # 百炼支持的模型
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": 0.7
