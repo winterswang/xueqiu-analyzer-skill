@@ -537,7 +537,7 @@ class SmartCrawlerV2:
         import urllib.request
 
         # 默认值
-        DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        DEFAULT_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1'
 
         # 多源获取 API Key（按优先级）
         api_key = (
@@ -580,7 +580,7 @@ class SmartCrawlerV2:
             base_url = DEFAULT_BASE_URL
 
         data = {
-            "model": "qwen-plus",  # 百炼支持的模型
+            "model": "qwen3.5-plus",  # 百炼支持的模型
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": 0.7

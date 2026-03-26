@@ -35,7 +35,7 @@ class GLM5Analyzer:
 
     def __init__(self, api_key: str = None):
         # 默认值
-        DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        DEFAULT_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1'
 
         # 多源获取 API Key（按优先级）
         if not api_key:
