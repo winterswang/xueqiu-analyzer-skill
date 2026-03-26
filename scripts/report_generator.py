@@ -34,6 +34,9 @@ class GLM5Analyzer:
     """GLM-5 分析器"""
 
     def __init__(self, api_key: str = None):
+        # 默认值
+        DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+
         # 多源获取 API Key（按优先级）
         if not api_key:
             api_key = (
@@ -42,7 +45,7 @@ class GLM5Analyzer:
                 os.environ.get('OPENAI_API_KEY', '')
             )
 
-        self.base_url = os.environ.get('CLAWLY_MODEL_GATEWAY_BASE', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+        self.base_url = DEFAULT_BASE_URL
 
         # 从 openclaw.json 读取配置（作为 fallback）
         if not api_key:
@@ -57,9 +60,16 @@ class GLM5Analyzer:
                     for name in ['modelstudio', 'clawly-model-gateway', 'qwencode', 'qwen']:
                         provider = providers.get(name, {})
                         if provider.get('apiKey'):
-                            api_key = provider['apiKey']
-                            self.base_url = provider.get('baseUrl', self.base_url)
-                            break
+                            raw_key = provider['apiKey']
+                            # 处理环境变量占位符
+                            if raw_key and not raw_key.startswith('${'):
+                                api_key = raw_key
+                            raw_url = provider.get('baseUrl', '')
+                            # 处理环境变量占位符 - 检测 ${...} 格式
+                            if raw_url and not raw_url.startswith('${'):
+                                self.base_url = raw_url
+                            if api_key:
+                                break
             except Exception:
                 pass
 

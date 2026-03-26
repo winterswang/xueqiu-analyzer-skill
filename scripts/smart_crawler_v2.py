@@ -536,13 +536,16 @@ class SmartCrawlerV2:
         """调用 LLM"""
         import urllib.request
 
+        # 默认值
+        DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+
         # 多源获取 API Key（按优先级）
         api_key = (
             os.environ.get('BAILIAN_API_KEY') or
             os.environ.get('DASHSCOPE_API_KEY') or
             os.environ.get('OPENAI_API_KEY', '')
         )
-        base_url = os.environ.get('CLAWLY_MODEL_GATEWAY_BASE', 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+        base_url = DEFAULT_BASE_URL
 
         # 从配置文件获取（作为 fallback）
         if not api_key:
@@ -556,14 +559,25 @@ class SmartCrawlerV2:
                     for name in ['modelstudio', 'clawly-model-gateway', 'qwencode', 'qwen']:
                         provider = providers.get(name, {})
                         if provider.get('apiKey'):
-                            api_key = provider['apiKey']
-                            base_url = provider.get('baseUrl', base_url)
-                            break
+                            raw_key = provider['apiKey']
+                            # 处理环境变量占位符
+                            if raw_key and not raw_key.startswith('${'):
+                                api_key = raw_key
+                            raw_url = provider.get('baseUrl', '')
+                            # 处理环境变量占位符 - 检测 ${...} 格式
+                            if raw_url and not raw_url.startswith('${'):
+                                base_url = raw_url
+                            if api_key:
+                                break
                 except Exception as e:
                     print(f"  ⚠️ 读取配置文件失败: {e}")
 
         if not api_key:
             raise ValueError("未找到 API Key，请设置 BAILIAN_API_KEY 环境变量或在 openclaw.json 中配置")
+
+        # 确保 base_url 是有效的 URL
+        if not base_url or base_url.startswith('${'):
+            base_url = DEFAULT_BASE_URL
 
         data = {
             "model": "glm-5",
