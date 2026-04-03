@@ -30,6 +30,7 @@ import time
 import random
 import logging
 import yaml
+import requests
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -1372,3 +1373,150 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# ========== API模式爬取（不依赖Playwright）==========
+class XueqiuAPICrawler:
+    """纯API模式爬虫 - 不依赖浏览器"""
+    
+    BASE_URL = "https://stock.xueqiu.com"
+    API_URL = "https://xueqiu.com"
+    
+    def __init__(self, cookies_path: str = None):
+        self.cookies_path = cookies_path or os.path.join(
+            Path(__file__).parent.parent, "config/cookies/xueqiu.json"
+        )
+        self.session = requests.Session()
+        self._load_cookies()
+    
+    def _load_cookies(self):
+        """加载cookie"""
+        try:
+            with open(self.cookies_path, 'r') as f:
+                cookies = json.load(f)
+            for c in cookies:
+                self.session.cookies.set(c['name'], c['value'], domain=c.get('domain', ''))
+        except Exception as e:
+            print(f"加载Cookie失败: {e}")
+    
+    def _get_headers(self) -> dict:
+        return {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Referer': 'https://xueqiu.com/'
+        }
+    
+    def _format_symbol(self, symbol: str) -> str:
+        """格式化股票代码"""
+        symbol = symbol.upper().strip()
+        if not symbol.startswith(('SH', 'SZ', 'HK')):
+            # 尝试自动判断市场
+            if symbol.startswith('6'):
+                symbol = 'SH' + symbol
+            elif symbol.startswith(('0', '3')):
+                symbol = 'SZ' + symbol
+            elif symbol.startswith('8') or symbol.startswith('4'):
+                symbol = 'BJ' + symbol
+        return symbol
+    
+    def get_stock_quote(self, symbol: str) -> dict:
+        """获取股票报价"""
+        symbol = self._format_symbol(symbol)
+        url = f"{self.BASE_URL}/v5/stock/quote.json?symbol={symbol}"
+        resp = self.session.get(url, headers=self._get_headers(), timeout=10)
+        data = resp.json()
+        return data.get('data', {}).get('quote', {})
+    
+    def get_discussions(self, symbol: str, page: int = 1, limit: int = 20) -> List[dict]:
+        """获取讨论"""
+        symbol_code = self._format_symbol(symbol)
+        url = f"{self.API_URL}/statuses/user_timeline.json"
+        params = {
+            'symbol': symbol,
+            'page': page,
+            'size': limit,
+            'type': 'status'
+        }
+        resp = self.session.get(url, params=params, headers=self._get_headers(), timeout=10)
+        data = resp.json()
+        statuses = data.get('statuses', [])
+        
+        discussions = []
+        for s in statuses:
+            discussions.append({
+                'author': s.get('user', {}).get('screen_name', ''),
+                'time': s.get('created_at', ''),
+                'content': s.get('text', ''),
+                'link': f"https://xueqiu.com/s/{s.get('user', {}).get('screen_name', '')}/{s.get('id', '')}",
+                'comments': [c.get('text', '') for c in s.get('comments', [])]
+            })
+        return discussions
+    
+    def get_news(self, symbol: str, page: int = 1, limit: int = 20) -> List[dict]:
+        """获取资讯"""
+        # 尝试雪球资讯API
+        url = f"{self.BASE_URL}/v5/stock/news.json"
+        symbol_code = self._format_symbol(symbol)
+        params = {
+            'symbol': symbol_code,
+            'page': page,
+            'size': limit
+        }
+        try:
+            resp = self.session.get(url, params=params, headers=self._get_headers(), timeout=10)
+            data = resp.json()
+            items = data.get('data', {}).get('items', []) or data.get('items', [])
+            
+            news = []
+            for item in items:
+                news.append({
+                    'title': item.get('title', ''),
+                    'time': item.get('created_at', ''),
+                    'summary': item.get('summary', ''),
+                    'link': item.get('target_url', ''),
+                    'source': item.get('origin', '')
+                })
+            return news
+        except Exception as e:
+            print(f"获取资讯失败: {e}")
+            return []
+    
+    def crawl(self, symbol: str, max_discussions: int = 20, max_news: int = 20) -> dict:
+        """爬取数据"""
+        print(f"🔍 API模式爬取 {symbol}...")
+        
+        # 获取股票信息
+        quote = self.get_stock_quote(symbol)
+        stock_info = {
+            'symbol': quote.get('symbol', symbol),
+            'name': quote.get('name', ''),
+            'current': quote.get('current', 0),
+            'percent': quote.get('percent', 0),
+            'change': quote.get('chg', 0),
+            'open': quote.get('open', 0),
+            'high': quote.get('high', 0),
+            'low': quote.get('low', 0),
+            'volume': quote.get('volume', 0),
+            'amount': quote.get('amount', 0),
+        }
+        print(f"📈 {stock_info['name']}: {stock_info['current']} ({stock_info['percent']}%)")
+        
+        # 获取讨论
+        discussions = self.get_discussions(symbol, limit=max_discussions)
+        print(f"💬 获取讨论: {len(discussions)} 条")
+        
+        # 获取资讯
+        news = self.get_news(symbol, limit=max_news)
+        print(f"📰 获取资讯: {len(news)} 条")
+        
+        return {
+            'stock_info': stock_info,
+            'discussions': discussions,
+            'news': news,
+            'crawl_time': datetime.now().isoformat()
+        }
+
+
+def crawl_by_api(symbol: str, max_discussions: int = 20, max_news: int = 20) -> dict:
+    """便捷函数：使用API模式爬取"""
+    crawler = XueqiuAPICrawler()
+    return crawler.crawl(symbol, max_discussions, max_news)
