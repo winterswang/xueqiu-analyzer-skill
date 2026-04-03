@@ -561,7 +561,7 @@ class XueqiuStockCrawlerV2:
                         seen_links.add(item_hash)
                         all_items.append(item)
                         new_count += 1
-                except:
+                except Exception as e:
                     pass
             
             self.logger.info(f"分页 [{page_num}] 本页新增: {new_count}, 累计: {len(all_items)} 条")

@@ -31,7 +31,7 @@ def login_xueqiu():
         # 启动浏览器
         try:
             browser = p.chromium.launch(executable_path=chrome_path, headless=True)
-        except:
+        except Exception as e:
             browser = p.chromium.launch(headless=True)
         context = browser.new_context()
         page = context.new_page()

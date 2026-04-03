@@ -1,3 +1,4 @@
+import config
 #!/usr/bin/env python3
 """获取雪球用户名称"""
 
@@ -13,10 +14,10 @@ def get_user_name(user_id: str):
         
         # 加载 cookies
         try:
-            with open('/root/.openclaw/workspace/xueqiu-analyzer-skill/config/xueqiu_cookies.json', 'r') as f:
+            with open('str(config.CONFIG_DIR / "xueqiu_cookies.json")', 'r') as f:
                 cookies = json.load(f)
                 context.add_cookies(cookies)
-        except:
+        except Exception as e:
             pass
         
         page = context.new_page()
