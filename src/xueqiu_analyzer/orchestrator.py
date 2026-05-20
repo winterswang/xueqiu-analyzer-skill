@@ -6,15 +6,17 @@ xueqiu-analyzer V3 — 编排器
 """
 
 import json
+import os
 import time
 import logging
 from pathlib import Path
 from typing import Optional
 
-from .models import CrawlResult, EvaluationResult, AnalysisResult
+from .models import CrawlResult, EvaluationResult, AnalysisResult, FinancialData
 from .config import get_config, get_data_dir
 from .evaluator import Evaluator
 from .analyzer import Analyzer
+from .financial_fetcher import FinancialFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,19 @@ class Orchestrator:
         else:
             crawl_result = self._iterative_crawl(
                 symbol, max_rounds, threshold, crawl_fn)
+
+        # 1.5 获取财务数据（如果还没拿到）
+        if not crawl_result.financial_data or not crawl_result.financial_data.has_data:
+            try:
+                fetcher = FinancialFetcher()
+                cookies = self._load_cookies()
+                fd = fetcher.fetch(symbol, cookies)
+                if fd:
+                    crawl_result.financial_data = fd
+                    logger.info(f"  财务数据: PE={fd.pe_ttm:.1f}, "
+                                f"PB={fd.pb:.1f}, ROE={fd.roe:.1f}%")
+            except Exception as e:
+                logger.warning(f"  财务数据获取失败: {e}")
 
         # 2. 评估
         evaluation = self.evaluator.evaluate(crawl_result)
@@ -119,6 +134,14 @@ class Orchestrator:
                 time.sleep(2)
 
         return result
+
+    def _load_cookies(self) -> list:
+        """加载 cookies"""
+        cookies_path = Path(os.path.expanduser('~/.xueqiu_crawler/cookies.json'))
+        if cookies_path.exists():
+            with open(cookies_path) as f:
+                return json.load(f)
+        return []
 
     def _load_data(self, path: str) -> CrawlResult:
         """从 JSON 文件加载数据"""
