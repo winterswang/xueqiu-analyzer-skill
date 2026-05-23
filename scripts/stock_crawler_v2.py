@@ -693,7 +693,8 @@ class XueqiuStockCrawlerV2:
                 
                 # 提取标题 - 清理无关内容
                 title = text
-                title = re.sub(r'^携程\(TCOM\)\d{2}-\d{2}\s*\d{1,2}:\d{2}·\s*来自新闻\s*', '', title)
+                # 移除通用格式的时间·来源前缀（兼容所有股票代码）
+                title = re.sub(r'^\w+\(\w+\)\d{2}-\d{2}\s*\d{1,2}:\d{2}·\s*来自\S+\s*', '', title)
                 title = re.sub(r'^收起\s*', '', title)
                 title = title[:100].strip()
                 
@@ -1081,7 +1082,7 @@ class XueqiuStockCrawlerV2:
                                     link=link
                                 ))
                         except Exception as e:
-                            pass
+                            self.logger.debug(f"解析讨论项失败: {e}")
                     
                     self.logger.info(f"获取 {len(stock_info.discussions)} 条讨论")
                     
@@ -1198,7 +1199,7 @@ class XueqiuStockCrawlerV2:
                                     link=link
                                 ))
                         except Exception as e:
-                            pass
+                            self.logger.debug(f"解析资讯项失败: {e}")
                     
                     self.logger.info(f"获取 {len(stock_info.news)} 条资讯")
                     

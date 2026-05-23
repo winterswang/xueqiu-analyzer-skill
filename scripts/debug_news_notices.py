@@ -1,12 +1,13 @@
-import config
 #!/usr/bin/env python3
 """
 调试资讯和公告页面结构
 """
-
 import json
 import time
+from pathlib import Path
 from playwright.sync_api import sync_playwright
+
+import config
 
 def debug_news_and_notices():
     with sync_playwright() as p:
@@ -16,11 +17,13 @@ def debug_news_and_notices():
         
         # 加载 cookies
         try:
-            with open('str(config.CONFIG_DIR / "xueqiu_cookies.json")', 'r') as f:
-                cookies = json.load(f)
-                context.add_cookies(cookies)
+            cookies_path = config.CONFIG_DIR / "xueqiu_cookies.json"
+            if cookies_path.exists():
+                with open(str(cookies_path), 'r') as f:
+                    cookies = json.load(f)
+                    context.add_cookies(cookies)
         except Exception as e:
-            pass
+            print(f"加载 cookies 失败: {e}")
         
         page = context.new_page()
         
