@@ -6,7 +6,7 @@ xueqiu-analyzer V3 — 数据质量检测器（Layer 1：硬指标）
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Optional
+from typing import List
 import logging
 
 from .models import CrawlResult
@@ -218,8 +218,8 @@ class ContentQualityChecker:
         # 内容完整率
         lines.append("### 内容完整率\n")
         lines.append(
-            f"| 类别 | 总数 | 有内容 | 完整率 | 状态 |\n"
-            f"|------|:---:|:---:|:---:|:---:|"
+            "| 类别 | 总数 | 有内容 | 完整率 | 状态 |\n"
+            "|------|:---:|:---:|:---:|:---:|"
         )
 
         for label, count, has_c, ratio, min_r in [

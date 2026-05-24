@@ -6,9 +6,12 @@ xueqiu-analyzer V3 — 配置加载
 
 import os
 import json
+import logging
 import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / 'config' / 'config.yaml'
@@ -49,8 +52,8 @@ def _load_openclaw_provider() -> Optional[Dict]:
                     'base_url': provider.get('baseUrl', ''),
                     'models': [m.get('id', '') for m in provider.get('models', [])],
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"openclaw.json fallback 读取失败: {e}")
     return None
 
 

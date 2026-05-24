@@ -15,8 +15,7 @@ import re
 import subprocess
 import urllib.request
 from pathlib import Path
-from typing import Dict, List, Optional
-from datetime import datetime
+from typing import Optional
 
 from .models import FinancialData
 

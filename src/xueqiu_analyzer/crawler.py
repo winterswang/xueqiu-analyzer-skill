@@ -15,7 +15,7 @@ import time
 import random
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 try:
     from playwright.sync_api import sync_playwright, Page, BrowserContext
@@ -23,7 +23,7 @@ except ImportError:
     raise ImportError("请安装 playwright: pip install playwright && playwright install chromium")
 
 from .models import (
-    CrawlResult, Discussion, News, Notice, Article, FinancialData,
+    CrawlResult, Discussion, News, Notice, Article,
 )
 
 logger = logging.getLogger(__name__)
