@@ -4,6 +4,7 @@
 使用 Playwright 模拟登录并保存 Cookie
 """
 import os
+import sys
 import json
 import time
 from pathlib import Path
@@ -24,14 +25,24 @@ def login_xueqiu():
     
     COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
     
-    # 使用已安装的 Chrome
-    chrome_path = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-    
     with sync_playwright() as p:
-        # 启动浏览器
+        # 查找已安装的 Chrome（跨平台）
         try:
-            browser = p.chromium.launch(executable_path=chrome_path, headless=True)
-        except Exception as e:
+            import shutil
+            chrome_path = shutil.which('google-chrome') or shutil.which('google-chrome-stable') or shutil.which('chromium') or shutil.which('chromium-browser')
+            if not chrome_path:
+                if sys.platform == 'darwin':
+                    chrome_path = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+                elif sys.platform == 'win32':
+                    import winreg
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe') as key:
+                        chrome_path = winreg.QueryValue(key, '')
+                # fallback: let Playwright auto-detect
+            if chrome_path and os.path.exists(chrome_path):
+                browser = p.chromium.launch(executable_path=chrome_path, headless=True)
+            else:
+                browser = p.chromium.launch(headless=True)
+        except Exception:
             browser = p.chromium.launch(headless=True)
         context = browser.new_context()
         page = context.new_page()

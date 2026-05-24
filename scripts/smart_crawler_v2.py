@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from stock_crawler_v2 import XueqiuStockCrawlerV2
 from financial_fetcher import FinancialDataFetcher
+from llm_client import LLMClient, LLMError
 
 
 # ============ 常量定义 ============
@@ -114,6 +115,7 @@ class SmartCrawlerV2:
         self.seen_links: set = set()
         self.cookies: List = None
         self.financial_data: dict = {}
+        self.llm_client = LLMClient()
         
     def crawl_round(self, max_pages: int = 3, max_articles: int = 10) -> dict:
         """执行一轮爬取"""
@@ -532,76 +534,6 @@ class SmartCrawlerV2:
 """
         return prompt
     
-    def call_llm(self, prompt: str, max_tokens: int = 4000) -> str:
-        """调用 LLM"""
-        import urllib.request
-
-        # 默认值
-        DEFAULT_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1'
-
-        # 多源获取 API Key（按优先级）
-        api_key = (
-            os.environ.get('BAILIAN_API_KEY') or
-            os.environ.get('DASHSCOPE_API_KEY') or
-            os.environ.get('OPENAI_API_KEY', '')
-        )
-        base_url = DEFAULT_BASE_URL
-
-        # 从配置文件获取（作为 fallback）
-        if not api_key:
-            config_path = os.path.expanduser('~/.openclaw/openclaw.json')
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-                    providers = config.get('models', {}).get('providers', {})
-                    # 尝试多个 provider 名称
-                    for name in ['modelstudio', 'clawly-model-gateway', 'qwencode', 'qwen']:
-                        provider = providers.get(name, {})
-                        if provider.get('apiKey'):
-                            raw_key = provider['apiKey']
-                            # 处理环境变量占位符
-                            if raw_key and not raw_key.startswith('${'):
-                                api_key = raw_key
-                            raw_url = provider.get('baseUrl', '')
-                            # 处理环境变量占位符 - 检测 ${...} 格式
-                            if raw_url and not raw_url.startswith('${'):
-                                base_url = raw_url
-                            if api_key:
-                                break
-                except Exception as e:
-                    print(f"  ⚠️ 读取配置文件失败: {e}")
-
-        if not api_key:
-            raise ValueError("未找到 API Key，请设置 BAILIAN_API_KEY 环境变量或在 openclaw.json 中配置")
-
-        # 确保 base_url 是有效的 URL
-        if not base_url or base_url.startswith('${'):
-            base_url = DEFAULT_BASE_URL
-
-        data = {
-            "model": "glm-5",  # 百炼支持的模型
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0.7
-        }
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-
-        req = urllib.request.Request(
-            f"{base_url}/chat/completions",
-            data=json.dumps(data).encode('utf-8'),
-            headers=headers,
-            method='POST'
-        )
-
-        with urllib.request.urlopen(req, timeout=1800) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
-            return result['choices'][0]['message']['content']
-    
     def parse_evaluation_result(self, response: str) -> Optional[EvaluationResult]:
         """解析评估结果 V2.2"""
         try:
@@ -676,7 +608,11 @@ class SmartCrawlerV2:
             print(f"     总计: ~{prompt_tokens} tokens")
             print(f"  Prompt 长度: {prompt_chars} 字符")
             
-            eval_response = self.call_llm(eval_prompt, max_tokens=MAX_TOKENS_EVALUATION)
+            try:
+                eval_response = self.llm_client.chat(eval_prompt, max_tokens=MAX_TOKENS_EVALUATION)
+            except LLMError as e:
+                print(f"  ❌ LLM调用失败: {e}")
+                continue
             
             # 解析结果
             evaluation_result = self.parse_evaluation_result(eval_response)
@@ -730,7 +666,11 @@ class SmartCrawlerV2:
         print(f"\n  Prompt 长度: {prompt_chars} 字符 (~{prompt_chars*2} tokens)")
         
         print("\n  调用 GLM-5 分析...")
-        report = self.call_llm(analysis_prompt, max_tokens=MAX_TOKENS_ANALYSIS)
+        try:
+            report = self.llm_client.chat(analysis_prompt, max_tokens=MAX_TOKENS_ANALYSIS)
+        except LLMError as e:
+            print(f"  ❌ LLM调用失败: {e}")
+            report = f"# 分析失败\n\nLLM调用失败: {e}"
         
         return {
             'symbol': self.symbol,
@@ -973,45 +913,60 @@ def main():
         json.dump(full_data, f, ensure_ascii=False, indent=2)
     print(f"  数据已保存: {data_path}")
     
-    # ============ 新增：自动上传 Gist 并发送飞书 ============
+    # ============ 自动上传 Gist 并发送飞书 ============
     print("\n" + "="*60)
     print("上传报告到 Gist...")
     print("="*60)
     
+    import shutil
     import subprocess
     
     gist_urls = {}
     
-    # 上传分析报告到 Gist
-    try:
-        result_gist = subprocess.run(
-            ['gh', 'gist', 'create', str(report_path), 
-             '--desc', f'{args.symbol} 投资价值分析报告 - {time.strftime("%Y-%m-%d")}'],
-            capture_output=True, text=True, timeout=30
+    # 检查 gh CLI 是否可用
+    if shutil.which('gh') is None:
+        print("  ⚠️ gh CLI 未安装，跳过 Gist 上传")
+    else:
+        def _upload_gist(file_path: Path, desc: str) -> str:
+            """上传单个文件到 Gist，返回 URL 或空字符串"""
+            try:
+                result = subprocess.run(
+                    ['gh', 'gist', 'create', str(file_path), '--desc', desc],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0:
+                    return result.stdout.strip()
+                else:
+                    print(f"  ❌ 上传失败: {result.stderr[:200]}")
+                    return ''
+            except subprocess.TimeoutExpired:
+                print(f"  ❌ 上传超时 (30s)")
+                return ''
+            except FileNotFoundError:
+                print(f"  ❌ gh CLI 未找到")
+                return ''
+            except Exception as e:
+                print(f"  ❌ 上传异常: {e}")
+                return ''
+        
+        # 上传分析报告到 Gist
+        report_url = _upload_gist(
+            report_path,
+            f'{args.symbol} 投资价值分析报告 - {time.strftime("%Y-%m-%d")}'
         )
-        if result_gist.returncode == 0:
-            gist_urls['report'] = result_gist.stdout.strip()
-            print(f"  ✅ 分析报告: {gist_urls['report']}")
-        else:
-            print(f"  ❌ 上传分析报告失败: {result_gist.stderr}")
-    except Exception as e:
-        print(f"  ❌ 上传分析报告异常: {e}")
-    
-    # 上传评估报告到 Gist
-    if result.get('evaluation'):
-        try:
-            result_gist = subprocess.run(
-                ['gh', 'gist', 'create', str(eval_path),
-                 '--desc', f'{args.symbol} 信息充分性评估报告 - {time.strftime("%Y-%m-%d")}'],
-                capture_output=True, text=True, timeout=30
+        if report_url:
+            gist_urls['report'] = report_url
+            print(f"  ✅ 分析报告: {report_url}")
+        
+        # 上传评估报告到 Gist
+        if result.get('evaluation'):
+            eval_url = _upload_gist(
+                eval_path,
+                f'{args.symbol} 信息充分性评估报告 - {time.strftime("%Y-%m-%d")}'
             )
-            if result_gist.returncode == 0:
-                gist_urls['evaluation'] = result_gist.stdout.strip()
-                print(f"  ✅ 评估报告: {gist_urls['evaluation']}")
-            else:
-                print(f"  ❌ 上传评估报告失败: {result_gist.stderr}")
-        except Exception as e:
-            print(f"  ❌ 上传评估报告异常: {e}")
+            if eval_url:
+                gist_urls['evaluation'] = eval_url
+                print(f"  ✅ 评估报告: {eval_url}")
     
     # 发送飞书消息
     if gist_urls:
