@@ -504,9 +504,12 @@ class XueqiuCrawler:
             if not text or len(text) < 10:
                 return None
 
-            # 标题：股票名+日期模式，如"携程(TCOM)04-19 21:45"
+            # 标题：股票名+日期模式
+            # 美股: 携程(TCOM)04-19 21:45
+            # A股: 茅台(600519)04-19 15:30
+            # 港股: 腾讯(00700)04-19 16:00
             title_match = re.search(
-                r'^(.+?\([A-Z]+\)\s*\d{2}-\d{2}\s+\d{2}:\d{2})',
+                r'^(.+?\([A-Z0-9]+\)\s*\d{2,4}[-/]\d{2}\s+\d{2}:\d{2})',
                 text
             )
             title = title_match.group(1).strip() if title_match else text[:80]
@@ -657,9 +660,9 @@ class XueqiuCrawler:
                 break
         if not parts:
             parts.append(notice.notice_type or '公告')
-        size_match = re.search(r'Size:\s*([^\s]+)', t)
+        size_match = re.search(r'Size:\s*([\d.]+\s*(?:KB|MB|GB)?)', t)
         if size_match:
-            parts.append(f'文件大小: {size_match.group(1)}')
+            parts.append(f'文件大小: {size_match.group(1).strip()}')
         if notice.time:
             parts.append(f'日期: {notice.time}')
         return ' | '.join(parts)

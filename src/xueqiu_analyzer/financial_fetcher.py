@@ -10,6 +10,7 @@ xueqiu-analyzer V3 — 财务数据获取
 
 import json
 import logging
+import os
 import re
 import subprocess
 import urllib.request
@@ -21,8 +22,10 @@ from .models import FinancialData
 
 logger = logging.getLogger(__name__)
 
-# financial-sdk CLI 路径
-_FINANCIAL_SDK_DIR = Path("/root/code/financial-sdk")
+# financial-sdk CLI 路径 —— 优先环境变量 FINANCIAL_SDK_DIR
+_FINANCIAL_SDK_DIR = Path(
+    os.environ.get("FINANCIAL_SDK_DIR", "/root/code/financial-sdk")
+)
 _FINANCIAL_SDK_CLI = _FINANCIAL_SDK_DIR / "src" / "financial_sdk_cli.py"
 _FINANCIAL_SDK_PYTHON = _FINANCIAL_SDK_DIR / ".venv" / "bin" / "python"
 
@@ -171,6 +174,12 @@ class FinancialFetcher:
                 logger.info(f"  雪球: PE={result.pe_ttm:.1f}, "
                             f"PB={result.pb:.1f}")
 
+                # 雪球 ROE fallback（financial-sdk 不可用时的备选）
+                profit = _safe_float(quote.get('profit'))
+                equity = _safe_float(quote.get('shareholder_funds'))
+                if profit and equity:
+                    result._xueqiu_roe = (profit / equity) * 100
+
         # 2. financial-sdk — 毛利率/净利率/ROE/ROIC/增速
         finsdk_data = self._fetch_finsdk_metrics(symbol)
         if finsdk_data:
@@ -180,9 +189,11 @@ class FinancialFetcher:
             result.profit_growth = finsdk_data.get('profit_growth', 0)
             result.yearly_roic = finsdk_data.get('yearly_roic', [])
 
-            # financial-sdk ROE 优先于雪球（更准确），雪球 ROE 是实时计算的
+            # ROE: financial-sdk 优先（更准确），雪球作 fallback
             if finsdk_data.get('roe', 0) > 0:
                 result.roe = finsdk_data['roe']
+            elif getattr(result, '_xueqiu_roe', 0) > 0:
+                result.roe = result._xueqiu_roe
 
             source_parts.append('financial-sdk')
             logger.info(f"  financial-sdk: 毛利率={result.gross_margin:.1f}%, "
@@ -228,8 +239,14 @@ def _safe_float(val) -> float:
 
 
 def _pct(val) -> float:
-    """将 0-1 的小数转为百分比，如 0.196 → 19.6"""
+    """financial-sdk 返回 0-1 ratio，转为百分比（如 0.196 → 19.6）
+
+    安全下限：值 < 0.001 时直接返回 0（避免噪声）。
+    值为 >= 1 时认为已是百分比，原样返回。
+    """
     v = _safe_float(val)
-    if 0 < v < 1:  # financial-sdk returns ratios, not percentages
+    if v < 0.001:
+        return 0.0
+    if v < 1:
         return v * 100
     return v
