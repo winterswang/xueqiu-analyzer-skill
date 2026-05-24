@@ -17,6 +17,7 @@ from .config import get_config, get_data_dir
 from .evaluator import Evaluator
 from .analyzer import Analyzer
 from .financial_fetcher import FinancialFetcher
+from .quality import ContentQualityChecker, ContentQualityReport, HEALTH_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,8 @@ class Orchestrator:
         self.config = config or get_config()
         self.evaluator = Evaluator(config=self.config)
         self.analyzer = Analyzer(config=self.config)
+        self.quality_checker = ContentQualityChecker(
+            config=self.config.get('quality', {}))
 
     def run(self, symbol: str, max_rounds: int = None,
             data_path: str = None, template: str = 'analysis',
@@ -94,19 +97,32 @@ class Orchestrator:
 
     def _iterative_crawl(self, symbol: str, max_rounds: int,
                          threshold: int, crawl_fn) -> CrawlResult:
-        """迭代爬取循环"""
+        """迭代爬取循环 —— Layer 1 硬指标检测在 LLM 评估之前"""
         if crawl_fn is None:
             raise ValueError(
                 "未提供 crawl_fn，请传入爬取函数或指定 data_path")
 
+        quality_config = self.config.get('quality', {})
+        health_threshold = quality_config.get('health_threshold', HEALTH_THRESHOLD)
+
         result = CrawlResult(symbol=symbol)
+        last_quality_report = None
 
         for round_num in range(1, max_rounds + 1):
             logger.info(f"=== 第 {round_num}/{max_rounds} 轮 ===")
 
-            # 渐进参数
+            # 定向爬取：根据上一轮质量报告的 suggestions 调整策略
             pages = min(5 + round_num, 10)
             articles = min(10 + round_num * 3, 30)
+
+            if last_quality_report and last_quality_report.suggestions:
+                suggestions = last_quality_report.suggestions
+                logger.info(f"🎯 定向补充: {', '.join(suggestions)}")
+                # 文章不足 → 多拉文章；资讯/公告不足 → 多翻页
+                if '文章' in suggestions:
+                    articles = min(articles + 10, 30)
+                if '新闻' in suggestions or '公告' in suggestions:
+                    pages = min(pages + 5, 15)
 
             new_data = crawl_fn(symbol, max_pages=pages,
                                 max_articles=articles)
@@ -117,7 +133,23 @@ class Orchestrator:
                         f"{len(result.notices)} 公告, "
                         f"{len(result.articles)} 文章")
 
-            # 评估
+            # ── Layer 1: 硬指标检查 ──
+            last_quality_report = self.quality_checker.check(result)
+            self._log_quality(last_quality_report)
+
+            if not last_quality_report.is_healthy:
+                if round_num >= max_rounds:
+                    logger.warning("⚠️ 达到最大轮次，硬指标仍不及格，降级进入分析")
+                    break
+                logger.info(
+                    f"🔴 数据质量不及格 "
+                    f"({last_quality_report.health_score}/{health_threshold})，"
+                    f"定向重爬..."
+                )
+                # 不等待直接进入下一轮
+                continue
+
+            # ── Layer 2: LLM 充分性评估 ──
             evaluation = self.evaluator.evaluate(result)
             self._log_evaluation(evaluation)
 
@@ -133,6 +165,8 @@ class Orchestrator:
                             f"({evaluation.effective_score}/{threshold})，继续爬取")
                 time.sleep(2)
 
+        # 附加最后一轮质量报告到 result（供下游使用）
+        result._quality_report = last_quality_report  # type: ignore
         return result
 
     def _load_cookies(self) -> list:
@@ -150,7 +184,7 @@ class Orchestrator:
         return CrawlResult.from_dict(data)
 
     def _log_evaluation(self, eval_result: EvaluationResult):
-        """日志输出评估结果"""
+        """日志输出 LLM 评估结果"""
         logger.info(f"评分: {eval_result.effective_score}/"
                     f"{200 + eval_result.financial_bonus} "
                     f"| 充分性: {eval_result.sufficiency}")
@@ -158,6 +192,18 @@ class Orchestrator:
             score = info.get('score', 0) if isinstance(info, dict) else 0
             bar = '█' * (score // 5)
             logger.info(f"  {topic}: {score:2d}分 {bar}")
+
+    def _log_quality(self, qr: ContentQualityReport):
+        """日志输出硬指标质量报告"""
+        status = '✅' if qr.is_healthy else '🔴'
+        logger.info(
+            f"数据质量: {qr.health_score}/100 {status} "
+            f"| 资讯{int(qr.news_ratio*100)}% "
+            f"公告{int(qr.notice_ratio*100)}% "
+            f"财务{int(qr.financial_completeness*100)}%"
+        )
+        for alert in qr.alerts:
+            logger.info(f"  {alert}")
 
     def _save_results(self, symbol: str, crawl_result: CrawlResult,
                       evaluation: EvaluationResult,
@@ -175,10 +221,14 @@ class Orchestrator:
                       indent=2)
         paths['data'] = str(data_path)
 
-        # 评估报告
+        # 质量报告（Layer 1 硬指标）
+        quality_report = getattr(crawl_result, '_quality_report', None)
+
+        # 评估报告（Layer 2 LLM评分）
         eval_path = data_dir / f'{symbol}_evaluation_{timestamp}.md'
-        eval_report = self._format_evaluation_report(symbol, evaluation,
-                                                     crawl_result)
+        eval_report = self._format_evaluation_report(
+            symbol, evaluation, crawl_result, quality_report
+        )
         eval_path.write_text(eval_report, encoding='utf-8')
         paths['evaluation'] = str(eval_path)
 
@@ -192,9 +242,18 @@ class Orchestrator:
 
     def _format_evaluation_report(self, symbol: str,
                                   evaluation: EvaluationResult,
-                                  data: CrawlResult) -> str:
+                                  data: CrawlResult,
+                                  quality_report: ContentQualityReport = None
+                                  ) -> str:
         """格式化评估报告"""
         lines = [f"# {symbol} 信息充分性评估报告\n"]
+
+        # ── Layer 1: 数据质量硬指标 ──
+        if quality_report:
+            lines.append(ContentQualityChecker.format_report(quality_report))
+            lines.append("\n---\n")
+
+        lines.append(f"## Layer 2: LLM 信息充分性评分\n")
         lines.append(f"**总分**: {evaluation.effective_score}/"
                      f"{200 + evaluation.financial_bonus}\n")
         lines.append(f"**充分性**: {evaluation.sufficiency}\n\n")
