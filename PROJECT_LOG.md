@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
 > 最后更新：2026-05-25  
-> 版本：V3.0.0  
-> 最近一次 `LAST_ANALYZED`：`d453d6a`
-> 分析范围：全部历史 commit（45 个）
+> 版本：V3.0.1  
+> 最近一次 `LAST_ANALYZED`：`1f8ca71`
+> 分析范围：全部历史 commit（46 个）
 
-<!-- @@LAST_ANALYZED: d453d6aa158173eb953741c68d174ba5a01e5b09 @@-->
+<!-- @@LAST_ANALYZED: 1f8ca71d3606bbf3b2aa91c91f8d2355b4c28ff3 @@-->
 
 ---
 
@@ -253,8 +253,8 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-010 | 硬编码 TCOM 修正 | 正则写死股票代码 | ✅ 已修复 | `64d0bde` | 代码审查 P0 修复 |
 | B-011 | `bare except: pass` | 2 处裸异常捕获 | ✅ 已修复 | `64d0bde` | 代码审查 P1 修复 |
 | B-012 | `debug_news_notices.py` 语法错误 | shebang/import/路径字符串 | ✅ 已修复 | `64d0bde` | 代码审查 P0 修复 |
-| B-013 | max_tokens 0 被当作 falsy 覆盖 | `max_tokens or config` 逻辑 | ✅ 已修复 | `d453d6a` | 改为 `max_tokens is not None` |
-| B-014 | openclaw.json 异常静默吞 | `except Exception: pass` 无日志 | ✅ 已修复 | `d453d6a` | 改为 `logger.debug(...)` |
+| B-013 | max_tokens 0 被当作 falsy 覆盖 | `max_tokens or config` 逻辑 | ✅ 已修复 | `1f8ca71` | 改为 `max_tokens is not None` |
+| B-014 | openclaw.json 异常静默吞 | `except Exception: pass` 无日志 | ✅ 已修复 | `1f8ca71` | 改为 `logger.debug(...)` |
 
 ---
 
@@ -271,8 +271,8 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TD-008 | 临时文件堆积 | `data/reports/` 无清理机制 | P2 | 🔴 未解决 | 维护性 |
 | TD-009 | 日志未统一 | V2 混用 print/logging | P2 | 🟡 部分解决 | V3 已统一使用 logging |
 | TD-010 | API Key 回退链过长 | 多种回退路径 | P2 | 🟡 部分解决 | V3 简化了但仍有 5 种 |
-| TD-011 | max_tokens falsy | `max_tokens or 8000` 将 0 当 falsy | P2 | ✅ 已解决 | d453d6a |
-| TD-012 | 静默吞异常 | `_load_openclaw_provider` 无日志 | P2 | ✅ 已解决 | d453d6a |
+| TD-011 | max_tokens falsy | `max_tokens or 8000` 将 0 当 falsy | P2 | ✅ 已解决 | 1f8ca71 |
+| TD-012 | 静默吞异常 | `_load_openclaw_provider` 无日志 | P2 | ✅ 已解决 | 1f8ca71 |
 
 ---
 
@@ -326,7 +326,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 
 ### v3.0.1 (2026-05-25) — 代码审查清理
 
-**Commit**：`d453d6a`
+**Commit**：`1f8ca71`（PR #4 — squash merge into main）
 
 **修复**：
 - 🐛 `max_tokens or config['max_tokens']` 将 0 当 falsy → 改为 `is not None`
