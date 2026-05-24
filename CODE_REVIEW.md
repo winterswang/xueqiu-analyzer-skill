@@ -56,7 +56,7 @@ V2 PR `fix/code-review-bugs-20260524` 的 13 个修复项在 V3 中的状态：
 | 5 | `evaluator.py` + `analyzer.py` | `_format_content()` / `_build_prompt()` 中财务数据表格格式化代码重复（~30行） | 改一处忘另一处 | ⏸️ 待修 |
 | 6 | `crawler.py` | `_js_click()` 用 f-string 拼接 JS 代码 `f"el.innerText.trim() === '{text}'"` | text 含单引号时 JS 语法错误 | ✅ 已修复 — `json.dumps()` 安全编码 |
 | 7 | `orchestrator.py` | `_upload_gist()` 缺少 `shutil.which('gh')` 预检 | 无 gh CLI 时静默失败 | ✅ 已修复 — 加 `shutil.which('gh')` 检查 |
-| 8 | `financial_fetcher.py` | `_fetch_akshare_supplement()` 仅对美股取数据，A股/港股 missing 毛利率/净利率 | 函数注释说是通用补充 | ⏸️ 待修 |
+| 8 | `financial_fetcher.py` | `_fetch_akshare_supplement()` 仅对美股取数据，A股/港股 missing 毛利率/净利率 | 函数注释说是通用补充 | ✅ 已修复 — 替换为 financial-sdk，全市场覆盖 |
 | 9 | `evaluator.py` | token 估算用 `chars * 2`，中英文不区分 | 中文 ~1.5 token/char, 英文 ~0.3，偏差 2-6x | ⏸️ 待修 |
 
 ### 🔵 Minor

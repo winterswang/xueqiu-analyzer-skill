@@ -100,12 +100,13 @@ def _build_llm_config(yaml_config: dict) -> dict:
     max_tokens = llm_cfg.get('max_tokens', 8000)
     temperature = llm_cfg.get('temperature', 0.7)
 
-    # API Key: 环境变量 > yaml > openclaw.json
+    # API Key: yaml指定的env > 通用fallback > openclaw.json
     api_key = (
+        _resolve_env(llm_cfg.get('api_key', '')) or
         os.environ.get('ARK_API_KEY') or
         os.environ.get('BAILIAN_API_KEY') or
         os.environ.get('DASHSCOPE_API_KEY') or
-        _resolve_env(llm_cfg.get('api_key', ''))
+        ''
     )
 
     if not api_key:

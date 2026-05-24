@@ -1,17 +1,24 @@
-# 雪球分析 Skill 配置
+# 雪球分析 Skill V3 配置
 
-# GLM-5 API 配置
-bailian:
-  api_key: "${BAILIAN_API_KEY}"
-  model: "glm-5"
+# LLM API 配置
+llm:
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  api_key: "${DEEPSEEK_API_KEY}"
   max_tokens: 8000
+  temperature: 0.7
 
 # 爬虫配置
 crawler:
   headless: true
-  delay_min: 2
-  delay_max: 5
+  delay_min: 3
+  delay_max: 8
   timeout: 30000
+
+# 评估配置
+evaluator:
+  score_threshold: 150
+  max_rounds: 3
 
 # 存储配置
 storage:
@@ -23,3 +30,8 @@ analysis:
   max_discussions: 10
   max_news: 10
   max_articles: 5
+
+# 通知配置
+notify:
+  gist: false
+  feishu: false

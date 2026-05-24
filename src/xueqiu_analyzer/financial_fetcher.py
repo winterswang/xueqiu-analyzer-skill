@@ -2,22 +2,29 @@
 xueqiu-analyzer V3 — 财务数据获取
 
 数据源：
-1. 雪球 API — PE/PB/ROE/市值/52周高低
-2. AkShare — 毛利率/净利率/营收增速/利润增速
-3. akshare_service — 多年 ROIC 趋势
+1. 雪球 API — PE/PB/市值/52周高低
+2. financial-sdk — 毛利率/净利率/ROE/ROIC/营收增速/利润增速/Piotroski
 
 所有数据源降级兼容：任一不可用时跳过，不影响主流程。
 """
 
 import json
 import logging
+import re
+import subprocess
 import urllib.request
+from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
 
 from .models import FinancialData
 
 logger = logging.getLogger(__name__)
+
+# financial-sdk CLI 路径
+_FINANCIAL_SDK_DIR = Path("/root/code/financial-sdk")
+_FINANCIAL_SDK_CLI = _FINANCIAL_SDK_DIR / "src" / "financial_sdk_cli.py"
+_FINANCIAL_SDK_PYTHON = _FINANCIAL_SDK_DIR / ".venv" / "bin" / "python"
 
 
 def detect_market(symbol: str) -> str:
@@ -34,11 +41,26 @@ def detect_market(symbol: str) -> str:
     return 'A股'
 
 
-def normalize_symbol(symbol: str, market: str) -> str:
-    """标准化股票代码（用于 AkShare）"""
+def to_finsdk_symbol(symbol: str, market: str = None) -> str:
+    """转换股票代码为 financial-sdk 格式
+
+    TCOM → TCOM, 00700 → 0700.HK, SH600519 → 600519.SH
+    """
     symbol = symbol.upper().strip()
-    if market == 'A股' and (symbol.startswith('SH') or symbol.startswith('SZ')):
-        return symbol[2:]
+    market = market or detect_market(symbol)
+
+    if market == 'A股':
+        # SH600000 → 600000.SH, SZ000001 → 000001.SZ
+        m = re.match(r'^(SH|SZ)(\d{6})$', symbol)
+        if m:
+            return f"{m.group(2)}.{m.group(1)}"
+        return f"{symbol}.SH"
+
+    if market == '港股':
+        # 00700 → 0700.HK
+        return f"{int(symbol):04d}.HK"
+
+    # 美股：原样
     return symbol
 
 
@@ -71,29 +93,54 @@ class XueqiuFinancialAPI:
             return None
 
 
+class FinancialSDKClient:
+    """financial-sdk CLI 封装"""
+
+    def _check_available(self) -> bool:
+        """检查 financial-sdk 是否可用"""
+        return (_FINANCIAL_SDK_PYTHON.exists()
+                and _FINANCIAL_SDK_CLI.exists())
+
+    def analyze(self, symbol: str) -> Optional[dict]:
+        """调用 financial-sdk analyze 获取完整指标"""
+        if not self._check_available():
+            logger.info("financial-sdk 未安装，财务指标数据不可用")
+            return None
+
+        finsdk_symbol = to_finsdk_symbol(symbol)
+        try:
+            result = subprocess.run(
+                [_FINANCIAL_SDK_PYTHON, _FINANCIAL_SDK_CLI,
+                 "analyze", finsdk_symbol, "--format", "json"],
+                capture_output=True, text=True,
+                timeout=60, cwd=_FINANCIAL_SDK_DIR,
+            )
+            if result.returncode != 0:
+                logger.warning(f"financial-sdk 调用失败: {result.stderr[:200]}")
+                return None
+
+            # 过滤掉 stderr 混入的警告行
+            stdout = result.stdout
+            # 找第一个 { 开始解析 JSON
+            json_start = stdout.find('{')
+            if json_start < 0:
+                return None
+            return json.loads(stdout[json_start:])
+
+        except subprocess.TimeoutExpired:
+            logger.warning("financial-sdk 调用超时")
+            return None
+        except Exception as e:
+            logger.warning(f"financial-sdk 调用异常: {e}")
+            return None
+
+
 class FinancialFetcher:
     """财务数据获取器 — 输出 V3 FinancialData"""
 
     def __init__(self):
         self.xueqiu_api = XueqiuFinancialAPI()
-        self._akshare_ok = self._check_akshare()
-        self._akshare_svc_ok = self._check_akshare_service()
-
-    def _check_akshare(self) -> bool:
-        try:
-            import akshare  # noqa: F401
-            return True
-        except ImportError:
-            logger.info("AkShare 未安装，毛利率/净利率数据不可用")
-            return False
-
-    def _check_akshare_service(self) -> bool:
-        try:
-            from akshare_service.skills.finance import calculate_roic  # noqa
-            return True
-        except ImportError:
-            logger.info("akshare_service 未安装，多年 ROIC 数据不可用")
-            return False
+        self.finsdk = FinancialSDKClient()
 
     def fetch(self, symbol: str, cookies: list = None) -> Optional[FinancialData]:
         """
@@ -109,7 +156,7 @@ class FinancialFetcher:
         result = FinancialData()
         source_parts = []
 
-        # 1. 雪球 API
+        # 1. 雪球 API — PE/PB/市值/52周高低
         if cookies:
             self.xueqiu_api.set_cookies(cookies)
             quote = self.xueqiu_api.fetch_quote(symbol)
@@ -120,32 +167,28 @@ class FinancialFetcher:
                 result.low52w = _safe_float(quote.get('low52w'))
                 result.high52w = _safe_float(quote.get('high52w'))
 
-                # 计算 ROE
-                profit = _safe_float(quote.get('profit'))
-                equity = _safe_float(quote.get('shareholder_funds'))
-                if profit and equity:
-                    result.roe = (profit / equity) * 100
-
                 source_parts.append('雪球')
                 logger.info(f"  雪球: PE={result.pe_ttm:.1f}, "
-                            f"PB={result.pb:.1f}, ROE={result.roe:.1f}%")
+                            f"PB={result.pb:.1f}")
 
-        # 2. 多年 ROIC
-        yearly_roic = self._fetch_multi_year_roic(symbol)
-        if yearly_roic:
-            result.yearly_roic = yearly_roic
-            source_parts.append('AkShareService')
+        # 2. financial-sdk — 毛利率/净利率/ROE/ROIC/增速
+        finsdk_data = self._fetch_finsdk_metrics(symbol)
+        if finsdk_data:
+            result.gross_margin = finsdk_data.get('gross_margin', 0)
+            result.net_margin = finsdk_data.get('net_margin', 0)
+            result.revenue_growth = finsdk_data.get('revenue_growth', 0)
+            result.profit_growth = finsdk_data.get('profit_growth', 0)
+            result.yearly_roic = finsdk_data.get('yearly_roic', [])
 
-        # 3. AkShare 补充（毛利率等）
-        akshare_data = self._fetch_akshare_supplement(symbol)
-        if akshare_data:
-            result.gross_margin = akshare_data.get('gross_margin', 0)
-            result.net_margin = akshare_data.get('net_margin', 0)
-            result.revenue_growth = akshare_data.get('revenue_growth', 0)
-            result.profit_growth = akshare_data.get('profit_growth', 0)
-            source_parts.append('AkShare')
-            logger.info(f"  AkShare: 毛利率={result.gross_margin:.1f}%, "
-                        f"净利率={result.net_margin:.1f}%")
+            # financial-sdk ROE 优先于雪球（更准确），雪球 ROE 是实时计算的
+            if finsdk_data.get('roe', 0) > 0:
+                result.roe = finsdk_data['roe']
+
+            source_parts.append('financial-sdk')
+            logger.info(f"  financial-sdk: 毛利率={result.gross_margin:.1f}%, "
+                        f"净利率={result.net_margin:.1f}%, "
+                        f"ROE={result.roe:.1f}%, "
+                        f"ROIC={finsdk_data.get('roic', 0):.1f}%")
 
         if result.has_data:
             logger.info(f"  财务数据来源: {'+'.join(source_parts)}")
@@ -154,51 +197,24 @@ class FinancialFetcher:
         logger.warning("  财务数据获取失败")
         return None
 
-    def _fetch_multi_year_roic(self, symbol: str) -> List[Dict]:
-        """获取多年 ROIC 数据"""
-        if not self._akshare_svc_ok:
-            return []
-        try:
-            from akshare_service.skills.finance import calculate_roic
-            market = detect_market(symbol)
-            code = normalize_symbol(symbol, market)
-            logger.info(f"  获取 {market} {code} 的 5 年 ROIC...")
-            df = calculate_roic(market=market, code=code, years=5)
-            if df is not None and not df.empty:
-                records = df.to_dict('records')
-                logger.info(f"  ✅ 获取到 {len(records)} 年 ROIC 数据")
-                return records
-        except Exception as e:
-            logger.warning(f"  ROIC 获取失败: {e}")
-        return []
+    def _fetch_finsdk_metrics(self, symbol: str) -> Optional[dict]:
+        """从 financial-sdk 获取核心财务指标"""
+        data = self.finsdk.analyze(symbol)
+        if not data:
+            return None
 
-    def _fetch_akshare_supplement(self, symbol: str) -> Optional[dict]:
-        """从 AkShare 获取补充数据（毛利率/净利率等）"""
-        if not self._akshare_ok:
-            return None
-        # 仅美股
-        market = detect_market(symbol)
-        if market != '美股':
-            return None
-        try:
-            import akshare as ak
-            df = ak.stock_financial_us_analysis_indicator_em(
-                symbol=symbol, indicator="年报")
-            if df is not None and not df.empty:
-                latest = df.iloc[0]
-                return {
-                    'gross_margin': _safe_float(
-                        latest.get('GROSS_PROFIT_RATIO')),
-                    'net_margin': _safe_float(
-                        latest.get('NET_PROFIT_RATIO')),
-                    'revenue_growth': _safe_float(
-                        latest.get('OPERATE_INCOME_YOY')),
-                    'profit_growth': _safe_float(
-                        latest.get('PARENT_HOLDER_NETPROFIT_YOY')),
-                }
-        except Exception as e:
-            logger.warning(f"  AkShare 补充数据获取失败: {e}")
-        return None
+        profitability = data.get('profitability') or {}
+        growth = data.get('growth') or {}
+
+        return {
+            'gross_margin': _pct(profitability.get('gross_margin')),
+            'net_margin': _pct(profitability.get('net_margin')),
+            'roe': _pct(profitability.get('roe')),
+            'roic': _pct(profitability.get('roic')),
+            'revenue_growth': _pct(growth.get('revenue_growth_yoy')),
+            'profit_growth': _pct(growth.get('profit_growth_yoy')),
+            'yearly_roic': [],  # V3 models 暂用空列表
+        }
 
 
 def _safe_float(val) -> float:
@@ -209,3 +225,11 @@ def _safe_float(val) -> float:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _pct(val) -> float:
+    """将 0-1 的小数转为百分比，如 0.196 → 19.6"""
+    v = _safe_float(val)
+    if 0 < v < 1:  # financial-sdk returns ratios, not percentages
+        return v * 100
+    return v
