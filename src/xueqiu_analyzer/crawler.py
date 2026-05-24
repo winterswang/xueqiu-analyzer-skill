@@ -31,6 +31,28 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_DIR = os.path.expanduser('~/.xueqiu_crawler')
 
 
+# ── 免责声明/无用内容关键词集合 ──
+_DISCLAIMER_PHRASES = frozenset([
+    "竭力确保所提供信息的准确和可靠",
+    "不能保证其绝对准确和可靠",
+    "不会承担因任何不准确或遗漏而引起的任何损失或损害",
+    "力求但不保证所有信息完全准确",
+    "不构成任何投资建议",
+    "所述内容仅供参考",
+    "本页面内容仅供参考",
+])
+
+
+def _is_disclaimer(text: str) -> bool:
+    """检查文本是否为免责声明/无用内容"""
+    if not text:
+        return True
+    for phrase in _DISCLAIMER_PHRASES:
+        if phrase in text:
+            return True
+    return False
+
+
 class XueqiuCrawler:
     """雪球数据爬虫 — 只管爬，输出标准 CrawlResult"""
 
@@ -93,9 +115,33 @@ class XueqiuCrawler:
                     result.name = name_elem.inner_text().strip()
                     self.logger.info(f"股票名称: {result.name}")
 
-                price_elem = page.query_selector('.stock-current')
-                if price_elem:
-                    result.price = price_elem.inner_text().strip()[:50]
+                # 当前价格：多选择器兼容
+                price_selectors = [
+                    '.stock-current',
+                    '.stock-current-price',
+                    '[class*="stock-current"]',
+                    '[class*="current-price"]',
+                    '[data-test="current-price"]',
+                ]
+                for sel in price_selectors:
+                    price_elem = page.query_selector(sel)
+                    if price_elem:
+                        result.price = price_elem.inner_text().strip()[:50]
+                        self.logger.info(f"股价: {result.price}")
+                        break
+
+                # 涨跌幅
+                change_selectors = [
+                    '.stock-change',
+                    '.stock-percent',
+                    '[class*="stock-change"]',
+                    '[class*="price-change"]',
+                ]
+                for sel in change_selectors:
+                    change_elem = page.query_selector(sel)
+                    if change_elem:
+                        result.change = change_elem.inner_text().strip()[:50]
+                        break
 
                 # ========== 爬取讨论 ==========
                 self.logger.info("=== 爬取讨论 ===")
@@ -163,8 +209,14 @@ class XueqiuCrawler:
                                         return best;
                                     }''')
                                     if content and len(content) > 20:
-                                        n.content = content[:5000]
-                                        self.logger.debug(f"    获取到 {len(content)} 字正文")
+                                        # 检查是否为免责声明/无用内容
+                                        if _is_disclaimer(content):
+                                            self.logger.debug(f"    跳过免责声明 ({len(content)}字)")
+                                            n.content = ""
+                                            n.link = ""  # 后续质量检测可以识别
+                                        else:
+                                            n.content = content[:5000]
+                                            self.logger.debug(f"    获取到 {len(content)} 字正文")
                                     detail_page.close()
                                 except Exception:
                                     try:

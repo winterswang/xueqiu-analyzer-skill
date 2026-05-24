@@ -13,6 +13,17 @@ from .models import CrawlResult
 
 logger = logging.getLogger(__name__)
 
+# ── 免责声明/无用内容关键词集合 ──
+_DISCLAIMER_PHRASES = frozenset([
+    "竭力确保所提供信息的准确和可靠",
+    "不能保证其绝对准确和可靠",
+    "不会承担因任何不准确或遗漏而引起的任何损失或损害",
+    "力求但不保证所有信息完全准确",
+    "不构成任何投资建议",
+    "所述内容仅供参考",
+    "本页面内容仅供参考",
+])
+
 # ── 质量阈值 ──
 MIN_CONTENT_LENGTH = 20          # 正文至少 20 字符才算"有内容"
 MIN_ARTICLE_LENGTH = 200         # 文章至少 200 字符
@@ -95,6 +106,16 @@ class ContentQualityChecker:
         self.news_min_ratio = q.get('news_min_ratio', NEWS_MIN_RATIO)
         self.notice_min_ratio = q.get('notice_min_ratio', NOTICE_MIN_RATIO)
 
+    @staticmethod
+    def _has_real_content(text: str, min_len: int) -> bool:
+        """检查文本是否有实质内容（非免责声明/占位符）"""
+        if not text or len(text.strip()) < min_len:
+            return False
+        for phrase in _DISCLAIMER_PHRASES:
+            if phrase in text:
+                return False
+        return True
+
     def check(self, result: CrawlResult) -> ContentQualityReport:
         """
         对爬取结果进行硬指标检测
@@ -110,7 +131,7 @@ class ContentQualityChecker:
         report.news_count = len(result.news)
         report.news_with_content = sum(
             1 for n in result.news
-            if n.content and len(n.content.strip()) >= self.min_content_len
+            if self._has_real_content(n.content, self.min_content_len)
         )
         if report.news_count > 0 and report.news_ratio < self.news_min_ratio:
             alerts.append(
@@ -122,7 +143,7 @@ class ContentQualityChecker:
         report.notice_count = len(result.notices)
         report.notice_with_content = sum(
             1 for n in result.notices
-            if n.content and len(n.content.strip()) >= self.min_content_len
+            if self._has_real_content(n.content, self.min_content_len)
         )
         if report.notice_count > 0 and report.notice_ratio < self.notice_min_ratio:
             alerts.append(
@@ -135,7 +156,7 @@ class ContentQualityChecker:
         report.article_count = len(result.articles)
         report.article_with_content = sum(
             1 for a in result.articles
-            if a.content and len(a.content.strip()) >= self.min_article_len
+            if self._has_real_content(a.content, self.min_article_len)
         )
         if report.article_count == 0:
             alerts.append("⚠️ 无专栏文章，管理层/深度分析可能缺失")
@@ -144,7 +165,7 @@ class ContentQualityChecker:
         report.discussion_count = len(result.discussions)
         report.discussion_with_content = sum(
             1 for d in result.discussions
-            if d.content and len(d.content.strip()) >= self.min_content_len
+            if self._has_real_content(d.content, self.min_content_len)
         )
 
         # ── 5. 财务数据检测 ──
