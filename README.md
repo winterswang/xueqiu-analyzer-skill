@@ -621,12 +621,14 @@ xueqiu-analyzer-skill/
 │   ├── financial_fetcher.py       # 财务数据获取
 │   ├── data_quality_checker.py    # 数据质量检查
 │   ├── run_analysis.py            # V1 全流程入口
-│   ├── analyzer.py                # 独立分析器
+│   ├── analyzer.py                # 独立分析器（V1 兼容）
 │   ├── config.py                  # 配置管理
-│   ├── login_xueqiu.py            # 雪球登录脚本
-│   ├── debug_news_notices.py      # 调试工具
-│   ├── get_username.py            # 用户信息
-│   └── update_template.py         # 模板更新工具
+│   ├── login_xueqiu.py            # 雪球登录脚本（CLI 独立运行）
+│   ├── debug_news_notices.py      # 调试工具（CLI 独立运行）
+│   ├── get_username.py            # 用户信息查询（CLI 独立运行）
+│   ├── refresh_cookies.py         # Cookies 刷新（CLI 独立运行）
+│   ├── llm_config.py              # LLM 配置加载器（⚠️ 未被引用，待集成）
+│   └── update_template.py         # 模板更新工具（CLI 独立运行）
 └── data/
     └── reports/                   # 分析报告输出目录
 ```
