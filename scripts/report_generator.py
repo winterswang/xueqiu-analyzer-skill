@@ -14,6 +14,8 @@ import json
 import urllib.request
 import urllib.error
 from datetime import datetime
+
+from llm_client import LLMClient, LLMError
 from typing import Dict, List, Optional
 
 # 导入模板
@@ -30,95 +32,11 @@ from report_template import (
 )
 
 
-class GLM5Analyzer:
-    """GLM-5 分析器"""
-
-    def __init__(self, api_key: str = None):
-        # 默认值
-        DEFAULT_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1'
-
-        # 多源获取 API Key（按优先级）
-        if not api_key:
-            api_key = (
-                os.environ.get('BAILIAN_API_KEY') or
-                os.environ.get('DASHSCOPE_API_KEY') or
-                os.environ.get('OPENAI_API_KEY', '')
-            )
-
-        self.base_url = DEFAULT_BASE_URL
-
-        # 从 openclaw.json 读取配置（作为 fallback）
-        if not api_key:
-            try:
-                config_path = os.path.expanduser('~/.openclaw/openclaw.json')
-                if os.path.exists(config_path):
-                    import json as json_module
-                    with open(config_path, 'r') as f:
-                        config = json_module.load(f)
-                    providers = config.get('models', {}).get('providers', {})
-                    # 尝试多个 provider 名称
-                    for name in ['modelstudio', 'clawly-model-gateway', 'qwencode', 'qwen']:
-                        provider = providers.get(name, {})
-                        if provider.get('apiKey'):
-                            raw_key = provider['apiKey']
-                            # 处理环境变量占位符
-                            if raw_key and not raw_key.startswith('${'):
-                                api_key = raw_key
-                            raw_url = provider.get('baseUrl', '')
-                            # 处理环境变量占位符 - 检测 ${...} 格式
-                            if raw_url and not raw_url.startswith('${'):
-                                self.base_url = raw_url
-                            if api_key:
-                                break
-            except Exception:
-                pass
-
-        self.api_key = api_key
-        self.api_url = f"{self.base_url}/chat/completions"
-        
-    def analyze(self, prompt: str, max_tokens: int = 4000) -> str:
-        """调用 GLM-5 API"""
-        if not self.api_key:
-            raise ValueError("未配置 BAILIAN_API_KEY")
-        
-        data = {
-            "model": "qwen3.5-plus",
-            "messages": [
-                {"role": "system", "content": "你是一位专业的投资分析助手，擅长分析股票投资价值。请用中文回答，输出结构化的分析报告。"},
-                {"role": "user", "content": prompt}
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.7
-        }
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        req = urllib.request.Request(
-            self.api_url,
-            data=json.dumps(data).encode('utf-8'),
-            headers=headers,
-            method='POST'
-        )
-        
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                result = json.loads(resp.read().decode('utf-8'))
-                return result['choices'][0]['message']['content']
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode('utf-8') if e.fp else ''
-            raise Exception(f"API 请求失败 ({e.code}): {error_body}")
-        except Exception as e:
-            raise Exception(f"API 调用异常: {e}")
-
-
 class ReportGenerator:
     """报告生成器"""
     
     def __init__(self, api_key: str = None):
-        self.analyzer = GLM5Analyzer(api_key)
+        self.llm_client = LLMClient(api_key=api_key)
     
     def generate(self, stock_data: dict) -> str:
         """
@@ -142,9 +60,16 @@ class ReportGenerator:
         # 构建 prompt
         prompt = self._build_prompt(symbol, name, price, discussions, news, articles, financial_data)
         
-        # 调用 GLM-5 分析
-        print(f"正在调用 GLM-5 分析 {symbol}...")
-        analysis = self.analyzer.analyze(prompt, max_tokens=4000)
+        # 调用 LLM 分析
+        print(f"正在调用 LLM 分析 {symbol}...")
+        try:
+            analysis = self.llm_client.chat(
+                prompt, max_tokens=4000,
+                system_prompt="你是一位专业的投资分析助手，擅长分析股票投资价值。请用中文回答，输出结构化的分析报告。"
+            )
+        except LLMError as e:
+            print(f"LLM 调用失败: {e}", file=sys.stderr)
+            raise
         
         # 构建完整报告
         report = self._format_report(symbol, name, price, discussions, news, notices, articles, financial_data, analysis)
