@@ -20,6 +20,14 @@ evaluator:
   score_threshold: 150
   max_rounds: 3
 
+# 数据质量检测配置（Layer 1 硬指标）
+quality:
+  health_threshold: 70          # 爬取健康分下限（低于此值跳过LLM评估直接重爬）
+  news_min_ratio: 0.5           # 资讯有内容率最低要求
+  notice_min_ratio: 0.3         # 公告有内容率最低要求
+  min_content_length: 20        # 最短正文长度
+  min_article_length: 200       # 最短文章长度
+
 # 存储配置
 storage:
   data_dir: "data"
