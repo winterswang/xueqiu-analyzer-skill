@@ -17,7 +17,7 @@ from .config import get_config, get_data_dir
 from .evaluator import Evaluator
 from .analyzer import Analyzer
 from .financial_fetcher import FinancialFetcher
-from .quality import ContentQualityChecker, ContentQualityReport
+from .quality import ContentQualityChecker, ContentQualityReport, HEALTH_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,8 @@ class Orchestrator:
         self.config = config or get_config()
         self.evaluator = Evaluator(config=self.config)
         self.analyzer = Analyzer(config=self.config)
-        self.quality_checker = ContentQualityChecker()
+        self.quality_checker = ContentQualityChecker(
+            config=self.config.get('quality', {}))
 
     def run(self, symbol: str, max_rounds: int = None,
             data_path: str = None, template: str = 'analysis',
@@ -120,7 +121,7 @@ class Orchestrator:
                 # 文章不足 → 多拉文章；资讯/公告不足 → 多翻页
                 if '文章' in suggestions:
                     articles = min(articles + 10, 30)
-                if '新闻' in suggestions:
+                if '新闻' in suggestions or '公告' in suggestions:
                     pages = min(pages + 5, 15)
 
             new_data = crawl_fn(symbol, max_pages=pages,

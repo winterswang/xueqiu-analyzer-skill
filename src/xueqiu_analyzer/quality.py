@@ -84,6 +84,17 @@ class ContentQualityReport:
 class ContentQualityChecker:
     """数据质量硬指标检测器 —— 不依赖 LLM"""
 
+    def __init__(self, config: dict = None):
+        """
+        Args:
+            config: quality 配置段，优先 config 值，fallback 模块常量
+        """
+        q = config or {}
+        self.min_content_len = q.get('min_content_length', MIN_CONTENT_LENGTH)
+        self.min_article_len = q.get('min_article_length', MIN_ARTICLE_LENGTH)
+        self.news_min_ratio = q.get('news_min_ratio', NEWS_MIN_RATIO)
+        self.notice_min_ratio = q.get('notice_min_ratio', NOTICE_MIN_RATIO)
+
     def check(self, result: CrawlResult) -> ContentQualityReport:
         """
         对爬取结果进行硬指标检测
@@ -99,11 +110,11 @@ class ContentQualityChecker:
         report.news_count = len(result.news)
         report.news_with_content = sum(
             1 for n in result.news
-            if n.content and len(n.content.strip()) >= MIN_CONTENT_LENGTH
+            if n.content and len(n.content.strip()) >= self.min_content_len
         )
-        if report.news_count > 0 and report.news_ratio < NEWS_MIN_RATIO:
+        if report.news_count > 0 and report.news_ratio < self.news_min_ratio:
             alerts.append(
-                f"⚠️ 资讯有内容率 {report.news_ratio:.0%} < {NEWS_MIN_RATIO:.0%}"
+                f"⚠️ 资讯有内容率 {report.news_ratio:.0%} < {self.news_min_ratio:.0%}"
             )
             suggestions.append("新闻")
 
@@ -111,11 +122,11 @@ class ContentQualityChecker:
         report.notice_count = len(result.notices)
         report.notice_with_content = sum(
             1 for n in result.notices
-            if n.content and len(n.content.strip()) >= MIN_CONTENT_LENGTH
+            if n.content and len(n.content.strip()) >= self.min_content_len
         )
-        if report.notice_count > 0 and report.notice_ratio < NOTICE_MIN_RATIO:
+        if report.notice_count > 0 and report.notice_ratio < self.notice_min_ratio:
             alerts.append(
-                f"⚠️ 公告有内容率 {report.notice_ratio:.0%} < {NOTICE_MIN_RATIO:.0%}"
+                f"⚠️ 公告有内容率 {report.notice_ratio:.0%} < {self.notice_min_ratio:.0%}"
             )
             if '新闻' not in suggestions:
                 suggestions.append('公告')
@@ -124,7 +135,7 @@ class ContentQualityChecker:
         report.article_count = len(result.articles)
         report.article_with_content = sum(
             1 for a in result.articles
-            if a.content and len(a.content.strip()) >= MIN_ARTICLE_LENGTH
+            if a.content and len(a.content.strip()) >= self.min_article_len
         )
         if report.article_count == 0:
             alerts.append("⚠️ 无专栏文章，管理层/深度分析可能缺失")
@@ -133,19 +144,19 @@ class ContentQualityChecker:
         report.discussion_count = len(result.discussions)
         report.discussion_with_content = sum(
             1 for d in result.discussions
-            if d.content and len(d.content.strip()) >= MIN_CONTENT_LENGTH
+            if d.content and len(d.content.strip()) >= self.min_content_len
         )
 
         # ── 5. 财务数据检测 ──
         fd = result.financial_data
         if fd:
-            _check_field(report, fd.pe_ttm, 'pe_ttm', 'PE(TTM)')
-            _check_field(report, fd.pb, 'pb', 'PB')
-            _check_field(report, fd.roe, 'roe', 'ROE')
-            _check_field(report, fd.gross_margin, 'gross_margin', '毛利率')
-            _check_field(report, fd.net_margin, 'net_margin', '净利率')
-            _check_field(report, fd.revenue_growth, 'revenue_growth', '营收增速')
-            _check_field(report, fd.profit_growth, 'profit_growth', '利润增速')
+            _check_field(report, fd.pe_ttm, 'PE(TTM)')
+            _check_field(report, fd.pb, 'PB')
+            _check_field(report, fd.roe, 'ROE')
+            _check_field(report, fd.gross_margin, '毛利率')
+            _check_field(report, fd.net_margin, '净利率')
+            _check_field(report, fd.revenue_growth, '营收增速')
+            _check_field(report, fd.profit_growth, '利润增速')
 
             if report.financial_fields_missing:
                 alerts.append(
@@ -176,10 +187,10 @@ class ContentQualityChecker:
         score = 0
 
         # 资讯有内容率
-        score += CONTENT_WEIGHTS['news'] * min(r.news_ratio / NEWS_MIN_RATIO, 1.0)
+        score += CONTENT_WEIGHTS['news'] * min(r.news_ratio / self.news_min_ratio, 1.0)
 
         # 公告有内容率
-        score += CONTENT_WEIGHTS['notices'] * min(r.notice_ratio / NOTICE_MIN_RATIO, 1.0)
+        score += CONTENT_WEIGHTS['notices'] * min(r.notice_ratio / self.notice_min_ratio, 1.0)
 
         # 文章有内容率+数量
         article_quality = r.article_ratio if r.article_count > 0 else 0
@@ -260,9 +271,9 @@ class ContentQualityChecker:
         return '\n'.join(lines)
 
 
-def _check_field(report: ContentQualityReport, value, key: str, label: str):
-    """检查单个财务字段是否填充"""
-    if value and value > 0:
+def _check_field(report: ContentQualityReport, value, label: str):
+    """检查单个财务字段是否填充（value != 0 视为有值，包括负数）"""
+    if value is not None and value != 0:
         report.financial_fields_populated.append(label)
     else:
         report.financial_fields_missing.append(label)

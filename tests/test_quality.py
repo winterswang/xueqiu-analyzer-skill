@@ -4,7 +4,6 @@ from src.xueqiu_analyzer.quality import (
     ContentQualityChecker,
     ContentQualityReport,
     _check_field,
-    MIN_CONTENT_LENGTH,
     HEALTH_THRESHOLD,
 )
 from src.xueqiu_analyzer.models import (
@@ -25,9 +24,11 @@ class TestContentQualityChecker:
 
     def test_all_news_have_content(self):
         result = CrawlResult(symbol='TEST')
+        checker = ContentQualityChecker()
+        ml = checker.min_content_len
         result.news = [
-            News(title='t1', content='a' * MIN_CONTENT_LENGTH, time=''),
-            News(title='t2', content='b' * MIN_CONTENT_LENGTH, time=''),
+            News(title='t1', content='a' * ml, time=''),
+            News(title='t2', content='b' * ml, time=''),
         ]
         checker = ContentQualityChecker()
         report = checker.check(result)
@@ -37,8 +38,10 @@ class TestContentQualityChecker:
 
     def test_news_below_threshold(self):
         result = CrawlResult(symbol='TEST')
+        checker = ContentQualityChecker()
+        ml = checker.min_content_len
         result.news = [
-            News(title='t1', content='a' * MIN_CONTENT_LENGTH, time=''),
+            News(title='t1', content='a' * ml, time=''),
             News(title='t2', content='', time=''),    # empty
             News(title='t3', content='short', time=''),  # too short
         ]
@@ -50,9 +53,11 @@ class TestContentQualityChecker:
 
     def test_notices_have_content(self):
         result = CrawlResult(symbol='TEST')
+        checker = ContentQualityChecker()
+        ml = checker.min_content_len
         result.notices = [
-            Notice(title='n1', content='Content ' * MIN_CONTENT_LENGTH, link=''),
-            Notice(title='n2', content='Body ' * MIN_CONTENT_LENGTH, link=''),
+            Notice(title='n1', content='Content ' * ml, link=''),
+            Notice(title='n2', content='Body ' * ml, link=''),
         ]
         checker = ContentQualityChecker()
         report = checker.check(result)
@@ -98,13 +103,13 @@ class TestContentQualityChecker:
     def test_financial_data_partial(self):
         fd = FinancialData()
         fd.pe_ttm = 6.0
-        fd.pb = 0.0  # missing
+        fd.pb = 0.0  # genuinely missing (0 = no data)
 
         result = CrawlResult(symbol='TEST', financial_data=fd)
         checker = ContentQualityChecker()
         report = checker.check(result)
         assert 'PE(TTM)' in report.financial_fields_populated
-        assert 'PB' in report.financial_fields_missing
+        assert 'PB' in report.financial_fields_missing  # 0 counts as missing
 
     def test_financial_data_missing(self):
         result = CrawlResult(symbol='TEST', financial_data=None)
@@ -156,12 +161,18 @@ class TestContentQualityChecker:
 
     def test_check_field_helper(self):
         report = ContentQualityReport()
-        _check_field(report, 0, 'test', '标签')
+        _check_field(report, 0, '标签')
         assert '标签' in report.financial_fields_missing
 
         report2 = ContentQualityReport()
-        _check_field(report2, 10.0, 'test', '标签')
+        _check_field(report2, 10.0, '标签')
         assert '标签' in report2.financial_fields_populated
+
+    def test_check_field_negative(self):
+        """负值应视为有效数据（如亏损公司 ROE=-5%）"""
+        report = ContentQualityReport()
+        _check_field(report, -5.0, 'ROE')
+        assert 'ROE' in report.financial_fields_populated
 
     def test_suggestions_when_unhealthy(self):
         result = CrawlResult(symbol='TEST')
