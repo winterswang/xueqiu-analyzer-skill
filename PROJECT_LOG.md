@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
 > 最后更新：2026-05-25  
-> 版本：V3.0.1  
-> 最近一次 `LAST_ANALYZED`：`1f8ca71`
-> 分析范围：全部历史 commit（46 个）
+> 版本：V3.0.2  
+> 最近一次 `LAST_ANALYZED`：`f58e9f4`
+> 分析范围：全部历史 commit（47 个）
 
-<!-- @@LAST_ANALYZED: 1f8ca71d3606bbf3b2aa91c91f8d2355b4c28ff3 @@-->
+<!-- @@LAST_ANALYZED: f58e9f44f58052abf91c4c84a8b8ceb3119edc09 @@-->
 
 ---
 
@@ -333,6 +333,19 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 - 🐛 `_load_openclaw_provider` 静默吞异常 → 加 `logger.debug()`
 - 🔧 移除 8 个文件中 18 处未使用 import（json, typing.Any/Dict/List/Optional, datetime, shutil, FinancialData）
 - 🔧 修复 4 处空 f-string（改为普通字符串）
+
+**验证**：
+- ✅ 51 个测试全部通过
+- ✅ pyflakes 零告警
+
+### v3.0.2 (2026-05-25) — 数据质量修复（资讯免责声明过滤 + 股价选择器兼容）
+
+**Commit**：`f58e9f4`（PR #6 — squash merge into main，closes #5）
+
+**修复**：
+- 🐛 资讯正文全部为免责声明 — 新增 `_is_disclaimer()` 免责声明关键词过滤，提取后跳过无用内容
+- 🐛 股价/涨跌未提取 — 股价选择器从单一 `.stock-current` 扩展为 5 个备选，涨跌幅新增 4 个备选
+- 🐛 质量检测器盲区 — `_has_real_content()` 同时检查长度 + 实质内容，免责声明无法逃逸 Layer 1 检测
 
 **验证**：
 - ✅ 51 个测试全部通过
