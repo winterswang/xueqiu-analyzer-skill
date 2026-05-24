@@ -69,7 +69,7 @@ class LLMClient:
             raise RuntimeError(f"LLM API 错误 ({e.code}): {error_body[:200]}")
         except Exception as e:
             logger.error(f"LLM 调用异常: {e}")
-            raise
+            raise RuntimeError(f"LLM 调用失败: {e}") from e
 
     def evaluate(self, prompt: str, max_tokens: int = 4000) -> str:
         """评估专用"""

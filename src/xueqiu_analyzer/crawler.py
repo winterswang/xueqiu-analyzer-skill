@@ -420,10 +420,13 @@ class XueqiuCrawler:
 
     def _js_click(self, page: Page, text: str) -> bool:
         try:
+            # 用 json.dumps 安全编码，避免 text 含引号时 JS 注入
+            safe_text = json.dumps(text)
             return page.evaluate(f'''() => {{
                 const elements = document.querySelectorAll('span, a, div, li');
+                const target = {safe_text};
                 for (const el of elements) {{
-                    if (el.innerText.trim() === '{text}' || el.innerText.trim().startsWith('{text}')) {{
+                    if (el.innerText.trim() === target || el.innerText.trim().startsWith(target)) {{
                         el.click();
                         return true;
                     }}

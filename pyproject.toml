@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xueqiu-analyzer"
+version = "3.0.0"
+description = "雪球股票分析 Skill V3 — 自动化雪球舆情分析 + AI 深度投资报告"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.40",
+    "pyyaml>=6.0",
+    "click>=8.0",
+]
+
+[project.scripts]
+xueqiu = "xueqiu_analyzer.cli:cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

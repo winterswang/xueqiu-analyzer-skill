@@ -238,6 +238,11 @@ class Orchestrator:
     def _upload_gist(self, paths: dict):
         """上传报告到 GitHub Gist"""
         import subprocess
+        import shutil
+
+        if not shutil.which('gh'):
+            logger.warning("gh CLI 未安装，跳过 Gist 上传")
+            return
 
         for key in ['report', 'evaluation']:
             path = paths.get(key)
@@ -271,8 +276,9 @@ class Orchestrator:
             f"**充分性**: {evaluation.sufficiency}\n"
         )
 
-        # 写入 pending 文件，由心跳机制发送
-        pending_path = Path('/tmp/pending_feishu_xueqiu_analysis.json')
+        # 使用 PID 避免并发运行时互相覆盖
+        pid = os.getpid()
+        pending_path = Path(f'/tmp/pending_feishu_xueqiu_analysis_{pid}.json')
         try:
             payload = {
                 'channel': 'feishu',
@@ -281,6 +287,6 @@ class Orchestrator:
             }
             pending_path.write_text(
                 json.dumps(payload, ensure_ascii=False), encoding='utf-8')
-            logger.info("飞书通知已准备: /tmp/pending_feishu_xueqiu_analysis.json")
+            logger.info(f"飞书通知已准备: {pending_path}")
         except Exception as e:
             logger.warning(f"飞书通知准备失败: {e}")
