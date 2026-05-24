@@ -73,7 +73,7 @@ def analyze(symbol, max_rounds, data, template):
                    f"{200 + result.evaluation.financial_bonus}")
         click.echo(f"充分性: {result.evaluation.sufficiency}")
     click.echo(f"模型: {result.model}")
-    click.echo(f"报告: 见 data/ 目录")
+    click.echo("报告: 见 data/ 目录")
 
 
 @cli.command()
@@ -109,7 +109,7 @@ def crawl(symbol, output, max_pages, max_articles):
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(result.to_dict(), f, ensure_ascii=False, indent=2)
 
-    click.echo(f"✅ 爬取完成:")
+    click.echo("✅ 爬取完成:")
     click.echo(f"  讨论: {len(result.discussions)}")
     click.echo(f"  资讯: {len(result.news)}")
     click.echo(f"  公告: {len(result.notices)}")
@@ -207,8 +207,6 @@ def _check_cookies():
 
 def _import_cookies(filepath: str):
     """导入 cookies"""
-    import shutil
-
     with open(filepath, 'r') as f:
         cookies = json.load(f)
 

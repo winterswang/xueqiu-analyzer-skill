@@ -10,9 +10,7 @@ import os
 import time
 import logging
 from pathlib import Path
-from typing import Optional
-
-from .models import CrawlResult, EvaluationResult, AnalysisResult, FinancialData
+from .models import CrawlResult, EvaluationResult, AnalysisResult
 from .config import get_config, get_data_dir
 from .evaluator import Evaluator
 from .analyzer import Analyzer
@@ -253,7 +251,7 @@ class Orchestrator:
             lines.append(ContentQualityChecker.format_report(quality_report))
             lines.append("\n---\n")
 
-        lines.append(f"## Layer 2: LLM 信息充分性评分\n")
+        lines.append("## Layer 2: LLM 信息充分性评分\n")
         lines.append(f"**总分**: {evaluation.effective_score}/"
                      f"{200 + evaluation.financial_bonus}\n")
         lines.append(f"**充分性**: {evaluation.sufficiency}\n\n")
