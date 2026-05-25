@@ -17,6 +17,9 @@ class Discussion:
     time: str
     link: str = ""
     comments: List[str] = field(default_factory=list)
+    comment_count: int = 0
+    forward_count: int = 0
+    like_count: int = 0
 
 
 @dataclass

@@ -532,11 +532,31 @@ class XueqiuCrawler:
             author = author_match.group(1).strip()[:30] if author_match else ''
             time_match = re.search(r'(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天|\d{2}:\d{2}|\d{4}-\d{2}-\d{2})', text)
             time_str = time_match.group(1) if time_match else ''
+
+            # Extract interaction counts before stripping
+            # Pattern: \ue62d (forward) \n count, \ue64b (comment) \n count, \ue633 (like) \n count
+            forward_count = 0
+            comment_count = 0
+            like_count = 0
+            fwd_match = re.search(r'\ue62d\s*\n\s*(\d+)', text)
+            if fwd_match:
+                forward_count = int(fwd_match.group(1))
+            cmt_match = re.search(r'\ue64b\s*\n\s*(\d+)', text)
+            if cmt_match:
+                comment_count = int(cmt_match.group(1))
+            like_match = re.search(r'\ue633\s*\n\s*(\d+)', text)
+            if like_match:
+                like_count = int(like_match.group(1))
+
             content = re.sub(r'^[^\d]+?(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天)[^\n]*', '', text)
+            # Strip interaction section (unicode icons + counts)
+            content = re.sub(r'[\ue000-\uf8ff\u2000-\u206f]', '', content)
+            content = re.sub(r'^\s*\d+\s*$', '', content, flags=re.MULTILINE)  # isolated number lines
             content = re.sub(r'展开.*$', '', content, flags=re.MULTILINE)
             content = re.sub(r'转发.*$', '', content, flags=re.MULTILINE)
             content = re.sub(r'赞.*$', '', content, flags=re.MULTILINE)
             content = re.sub(r'收藏.*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'\n{3,}', '\n\n', content)  # collapse multiple blank lines
             content = content.strip()[:500]
 
             link = ''
@@ -548,7 +568,10 @@ class XueqiuCrawler:
 
             if content and len(content) > 10:
                 return Discussion(author=author, content=content,
-                                  time=time_str, link=link)
+                                  time=time_str, link=link,
+                                  comment_count=comment_count,
+                                  forward_count=forward_count,
+                                  like_count=like_count)
         except Exception:
             pass
         return None
@@ -634,8 +657,11 @@ class XueqiuCrawler:
             }''')
 
             for item_data in items:
+                # Clean unicode private-use icons from title
+                raw_title = item_data.get('title', '')
+                clean_title = re.sub(r'[\ue000-\uf8ff\u2000-\u206f]', '', raw_title).strip()
                 notice = Notice(
-                    title=item_data.get('title', ''),
+                    title=clean_title,
                     link=item_data.get('link', ''),
                 )
                 # 提取时间
