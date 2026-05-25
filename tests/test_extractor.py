@@ -231,5 +231,146 @@ class TestPerformance:
         assert elapsed < 30, f"提取耗时 {elapsed:.1f}s，超过 30s 限制"
 
 
+
+# ── Phase 4: Integration & Fallback Tests ─────────────────────────────────
+
+class TestPhase4Integration:
+    """Phase 4 Integration — verify crawler integration"""
+
+    def test_extract_with_raw_html_skip(self):
+        """Verify raw_html param: skips fetch_page_html when provided"""
+        html = '<html><body><article><p>' + '有效正文内容，' * 30 + '</p></article></body></html>'
+        with patch("xueqiu_analyzer.extractor.fetch_page_html") as mf:
+            with patch("xueqiu_analyzer.extractor.call_deepseek_extract") as mc:
+                mf.return_value = html
+                mc.return_value = ArticleContent(
+                    title="测试标题",
+                    author="测试作者",
+                    content="这是一段有效的正文内容，长度超过50个字符。" * 5,
+                    time="2024-03-28 10:00",
+                    symbols='["600519"]',
+                    url="https://xueqiu.com/123/456"
+                )
+
+                extractor = ScrapingExtractor()
+                result = extractor.extract("https://xueqiu.com/123/456", raw_html=html)
+
+                # fetch_page_html should NOT be called when raw_html is provided
+                mf.assert_not_called()
+                # call_deepseek_extract SHOULD be called
+                mc.assert_called_once()
+                assert result.is_valid()
+                assert result.title == "测试标题"
+
+    def test_crawler_integration_import(self):
+        """Verify XueqiuCrawler can import and init extractor"""
+        from xueqiu_analyzer.crawler import XueqiuCrawler
+        crawler = XueqiuCrawler()
+        assert hasattr(crawler, "extractor")
+        assert crawler.extractor is not None
+
+
+class TestPhase4Fallback:
+    """Phase 4 Fallback — LLM failure triggers fallback to selector"""
+
+    @patch("xueqiu_analyzer.extractor.fetch_page_html")
+    @patch("xueqiu_analyzer.extractor.call_deepseek_extract")
+    def test_llm_returns_invalid_content_uses_fallback(self, mock_call_deepseek, mock_fetch_page):
+        """DeepSeek returns valid format but content too short -> fallback"""
+        html = '<html><body><article><p>' + '正文' * 50 + '</p></article></body></html>'
+        mock_fetch_page.return_value = html
+        mock_call_deepseek.return_value = ArticleContent(
+            title="",
+            author="",
+            content="太短",
+            time="",
+            symbols="",
+            url="https://xueqiu.com/123/456"
+        )
+
+        extractor = ScrapingExtractor()
+        result = extractor.extract("https://xueqiu.com/123/456")
+
+        assert result.url == "https://xueqiu.com/123/456"
+        assert result.content == "太短"
+
+    @patch("xueqiu_analyzer.extractor.fetch_page_html")
+    @patch("xueqiu_analyzer.extractor.call_deepseek_extract")
+    def test_llm_raises_exception_uses_fallback(self, mock_call_deepseek, mock_fetch_page):
+        """DeepSeek API raises exception -> fallback"""
+        mock_fetch_page.return_value = '<html><body><p>' + '正文' * 100 + '</p></body></html>'
+        mock_call_deepseek.side_effect = Exception("API Error")
+
+        extractor = ScrapingExtractor()
+        result = extractor.extract("https://xueqiu.com/123/456")
+
+        assert result.url == "https://xueqiu.com/123/456"
+        assert result.content == "[提取失败，请手动查看]"
+
+
+    @patch("xueqiu_analyzer.extractor.fetch_page_html")
+    @patch("xueqiu_analyzer.extractor.call_deepseek_extract")
+    def test_partial_result_preserved_in_fallback(self, mock_call_deepseek, mock_fetch_page):
+        """partial result has content but is_valid=False -> returns partial"""
+        html = '<html><body><p>' + '正文' * 100 + '</p></body></html>'
+        mock_fetch_page.return_value = html
+        partial = ArticleContent(
+            title="部分标题",
+            author="",
+            content="content长度不足50字符的正文内容",
+            time="",
+            symbols="",
+            url="https://xueqiu.com/123/456"
+        )
+        mock_call_deepseek.return_value = partial
+        assert not partial.is_valid()
+
+        extractor = ScrapingExtractor()
+        result = extractor.extract("https://xueqiu.com/123/456")
+
+        # fallback returns partial if it has content
+        assert result.content == "content长度不足50字符的正文内容"
+
+    @patch("xueqiu_analyzer.extractor.fetch_page_html")
+    @patch("xueqiu_analyzer.extractor.call_deepseek_extract")
+    def test_html_too_short_uses_fallback(self, mock_call_deepseek, mock_fetch_page):
+        """HTML too short (< 100 bytes) -> fallback without calling LLM"""
+        mock_fetch_page.return_value = "<html><p>太短</p></html>"
+
+        extractor = ScrapingExtractor()
+        result = extractor.extract("https://xueqiu.com/123/456")
+
+        # LLM should NOT be called
+        mock_call_deepseek.assert_not_called()
+        assert result.content == "[提取失败，请手动查看]"
+
+
+
+class TestPhase4Performance:
+    """Phase 4 Performance tests"""
+
+    @patch("xueqiu_analyzer.extractor.fetch_page_html")
+    @patch("xueqiu_analyzer.extractor.call_deepseek_extract")
+    def test_extract_performance_under_30s(self, mock_call_deepseek, mock_fetch_page):
+        """Verify extract time < 30s (mock path should be fast)"""
+        html = '<html><body><article><p>' + '正文内容' * 100 + '</p></article></body></html>'
+        mock_fetch_page.return_value = html
+        mock_call_deepseek.return_value = ArticleContent(
+            content="这是一段有效的正文内容，长度超过50个字符。" * 5,
+            url="https://xueqiu.com/123/456"
+        )
+
+        extractor = ScrapingExtractor()
+        times = []
+        for _ in range(3):
+            start = time.time()
+            result = extractor.extract("https://xueqiu.com/123/456")
+            elapsed = time.time() - start
+            times.append(elapsed)
+            assert result.is_valid(), f"提取失败: {result.content!r}"
+
+        avg_time = sum(times) / len(times)
+        assert avg_time < 5.0, f"平均耗时 {avg_time:.2f}s，超过 5s（mock 应极快）"
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
