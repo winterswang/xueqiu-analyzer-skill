@@ -223,12 +223,13 @@ class ScrapingExtractor:
         """
         self.cookies = cookies or []
 
-    def extract(self, url: str, fallback_selector: str = None) -> ArticleContent:
+    def extract(self, url: str, raw_html: str = None, fallback_selector: str = None) -> ArticleContent:
         """
         提取文章正文
 
         Args:
             url: 文章详情页 URL
+            raw_html: 可选，预渲染的页面 HTML（传入则跳过 fetch_page_html）
             fallback_selector: 可选的 fallback CSS selector（保留兼容）
 
         Returns:
@@ -237,8 +238,11 @@ class ScrapingExtractor:
         logger.info(f"使用 LLM 提取文章: {url}")
 
         try:
-            # Step 1: Playwright 渲染获取 HTML
-            html = fetch_page_html(url, cookies=self.cookies)
+            # Step 1: 获取 HTML（优先用传入的 raw_html）
+            if raw_html:
+                html = _clean_html(raw_html)
+            else:
+                html = fetch_page_html(url, cookies=self.cookies)
 
             if not html or len(html) < 100:
                 logger.warning(f"页面 HTML 为空或太短: {url}")

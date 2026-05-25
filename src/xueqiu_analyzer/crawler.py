@@ -25,6 +25,7 @@ except ImportError:
 from .models import (
     CrawlResult, Discussion, News, Notice, Article,
 )
+from .extractor import ScrapingExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class XueqiuCrawler:
         self.credentials_path = os.path.join(self.config_dir, 'credentials.yaml')
         self.credentials = self._load_credentials()
         self.logger = logger
+        self.extractor = ScrapingExtractor()
 
     def crawl(self, symbol: str, max_pages: int = 5,
               max_articles: int = 10) -> CrawlResult:
@@ -654,32 +656,58 @@ class XueqiuCrawler:
         return notices
 
     def _crawl_article_detail(self, page: Page, url: str) -> Optional[Article]:
+        """爬取雪球文章详情
+
+        优先使用 ScrapingExtractor（DeepSeek LLM）提取正文，
+        失败时回退到原有 CSS selector 逻辑。
+        """
         try:
             detail_page = page.context.new_page()
             detail_page.goto(url, timeout=30000)
             time.sleep(2)
             self._close_modal(detail_page)
 
+            # ── Phase 1: DeepSeek LLM 提取 ───────────────────────────
+            raw_html = detail_page.content()
+            result = self.extractor.extract(url, raw_html=raw_html)
+
+            if result.is_valid():
+                # 解析 symbols（可能是 JSON 字符串或列表）
+                import json as _json
+                try:
+                    symbols = _json.loads(result.symbols) if isinstance(result.symbols, str) else result.symbols
+                    if not isinstance(symbols, list):
+                        symbols = []
+                except Exception:
+                    symbols = []
+                article_id = url.rstrip('/').split('/')[-1] if '/' in url else ''
+                detail_page.close()
+                return Article(
+                    title=result.title[:200] if result.title else '',
+                    author=result.author,
+                    content=result.content[:10000],
+                    time=result.time,
+                    link=url,
+                    article_id=article_id,
+                )
+
+            # ── Phase 2: Fallback 原有 CSS selector ──────────────────
             title = detail_page.evaluate('''() => {
                 const h1 = document.querySelector('.article__bd__title');
                 return h1 ? h1.innerText.trim() : document.title;
             }''')
-
             author = detail_page.evaluate('''() => {
                 const el = document.querySelector('.article__bd__from a, .user-name, [class*="author"]');
                 return el ? el.innerText.trim() : '';
             }''')
-
             time_str = detail_page.evaluate('''() => {
                 const el = document.querySelector('.article__bd__time, [class*="date"], time');
                 return el ? el.innerText.trim() : '';
             }''')
-
             content = detail_page.evaluate('''() => {
                 const article = document.querySelector('.article__bd__detail');
                 return article ? article.innerText.trim() : '';
             }''')
-
             detail_page.close()
 
             if content and len(content) > 50:
