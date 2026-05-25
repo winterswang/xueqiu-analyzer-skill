@@ -32,6 +32,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_DIR = os.path.expanduser('~/.xueqiu_crawler')
 
 
+def _xueqiu_url_for_symbol(symbol: str) -> str:
+    """将股票代码转换为雪球股票详情页 URL
+
+    A 股：6位数字 → 添加 SH/SZ 前缀
+    港股：5位数字（00700）→ 直接使用
+    美股：字母代码（PDD/AAPL）→ 直接使用
+    """
+    symbol = symbol.strip()
+    # A 股：6位数字
+    if symbol.isdigit() and len(symbol) == 6:
+        if symbol.startswith('6') or symbol.startswith('5'):
+            return f'https://xueqiu.com/S/SH{symbol}'
+        else:  # 0, 1, 2, 3, 8 开头 → 深圳
+            return f'https://xueqiu.com/S/SZ{symbol}'
+    # 其他（港股如 00700，美股如 PDD）直接使用
+    return f'https://xueqiu.com/S/{symbol}'
+
+
 # ── 免责声明/无用内容关键词集合 ──
 _DISCLAIMER_PHRASES = frozenset([
     "竭力确保所提供信息的准确和可靠",
@@ -104,7 +122,7 @@ class XueqiuCrawler:
                 self._close_modal(page)
 
                 # 2. 访问股票详情页
-                url = f'https://xueqiu.com/S/{symbol}'
+                url = _xueqiu_url_for_symbol(symbol)
                 self.logger.info(f"访问股票详情页: {url}")
                 page.goto(url, timeout=self.timeout)
                 self.human_delay(3, 6)
