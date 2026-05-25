@@ -134,7 +134,11 @@ def call_deepseek_extract(html_content: str, url: str) -> ArticleContent:
 # ── Playwright 渲染 ────────────────────────────────────────────────────────
 
 def fetch_page_html(url: str, cookies: list = None) -> str:
-    """使用 Playwright 渲染页面并返回正文 HTML"""
+    """使用 Playwright 渲染页面并返回正文 HTML
+
+    优先复用已有的 Chrome remote debugging session（保持登录态），
+    连接失败时回退到启动新的 headless 浏览器。
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -167,6 +171,28 @@ def fetch_page_html(url: str, cookies: list = None) -> str:
         except Exception:
             return ""
 
+    # ── Phase 1: 尝试连接已有 Chrome（保持登录态） ──────────────────
+    browser = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp("http://localhost:9222")
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.new_page()
+            page.goto(url, timeout=30000, wait_until="networkidle")
+            page.wait_for_timeout(2000)
+            html = _extract_main_content(page)
+            html = _clean_html(html)
+            page.close()
+            return html
+    except Exception:
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        # Fall through to Phase 2
+
+    # ── Phase 2: 启动新的 headless 浏览器 ──────────────────────────
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=PLAYWRIGHT_HEADLESS)
         context = browser.new_context(
@@ -176,15 +202,9 @@ def fetch_page_html(url: str, cookies: list = None) -> str:
 
         try:
             page.goto(url, timeout=30000, wait_until="networkidle")
-            # 等待内容加载
             page.wait_for_timeout(2000)
-
-            # 获取主要正文区域
             html = _extract_main_content(page)
-
-            # 额外清理
             html = _clean_html(html)
-
         finally:
             browser.close()
 
