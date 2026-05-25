@@ -171,9 +171,13 @@ class XueqiuCrawler:
                             pass
                     self.logger.info(f"获取 {len(result.news)} 条资讯")
 
-                    # 爬取资讯详情（仅对真正的文章链接）
+                    # 爬取资讯详情（仅对真正的文章链接，过滤股票页自身链接）
                     if result.news:
-                        news_with_link = [n for n in result.news if n.link]
+                        import re as _re
+                        news_with_link = [
+                            n for n in result.news
+                            if n.link and not _re.search(r'/S/[A-Z0-9]+$', n.link)
+                        ]
                         if news_with_link:
                             self.logger.info("爬取资讯详情...")
                             for i, n in enumerate(news_with_link[:15]):
@@ -596,7 +600,8 @@ class XueqiuCrawler:
                 if href and not href.startswith('javascript'):
                     full = href if href.startswith('http') else 'https://xueqiu.com' + href
                     # 过滤掉回到股票页的链接
-                    if not re.search(r'/S/[A-Z]+$', full):
+                    # 过滤股票页自身链接 (/S/SH600519, /S/BABA 等)
+                    if not re.search(r'/S/[A-Z0-9]+$', full):
                         link = full
                         break
 
