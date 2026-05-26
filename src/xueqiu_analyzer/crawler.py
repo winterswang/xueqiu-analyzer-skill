@@ -14,6 +14,8 @@ import re
 import time
 import random
 import logging
+import requests
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -164,111 +166,32 @@ class XueqiuCrawler:
                         break
 
                 # ========== 爬取讨论 ==========
-                self.logger.info("=== 爬取讨论 ===")
-                if self._switch_tab(page, '讨论'):
-                    all_items = self._parse_items_with_pagination(
-                        page, max_pages=max_pages, target_count=30)
-                    for item in all_items[:30]:
-                        try:
-                            disc = self._parse_single_discussion(item)
-                            if disc:
-                                result.discussions.append(disc)
-                        except Exception:
-                            pass
-                    self.logger.info(f"获取 {len(result.discussions)} 条讨论")
+                self.logger.info("=== 爬取讨论 (API) ===")
+                api_discs = self._crawl_discussions_via_api(
+                    symbol, max_pages=max_pages, per_page=50)
+                for disc in api_discs:
+                    if disc.is_column and disc.link:
+                        result.articles.append(Article(
+                            title=disc.content[:80],
+                            author=disc.author,
+                            content=disc.content,
+                            time=disc.time,
+                            link=disc.link,
+                            is_column=True,
+                        ))
+                    else:
+                        result.discussions.append(disc)
+                self.logger.info(f"获取 {len(result.discussions)} 条讨论（含 {sum(1 for d in result.discussions if d.is_column)} 专栏）")
 
                 # ========== 爬取资讯 ==========
-                self.logger.info("=== 爬取资讯 ===")
-                if self._switch_tab(page, '资讯'):
-                    all_items = self._parse_items_with_pagination(
-                        page, max_pages=max_pages, target_count=30)
-                    for item in all_items[:30]:
-                        try:
-                            news = self._parse_single_news(item)
-                            if news:
-                                result.news.append(news)
-                        except Exception:
-                            pass
-                    self.logger.info(f"获取 {len(result.news)} 条资讯")
-
-                    # 爬取资讯详情（仅对真正的文章链接，过滤股票页自身链接）
-                    if result.news:
-                        import re as _re
-                        news_with_link = [
-                            n for n in result.news
-                            if n.link and not _re.search(r'/S/[A-Z0-9]+$', n.link)
-                        ]
-                        if news_with_link:
-                            self.logger.info("爬取资讯详情...")
-                            for i, n in enumerate(news_with_link[:15]):
-                                try:
-                                    self.logger.info(f"  [{i+1}/{len(news_with_link)}] {n.title[:40]}...")
-                                    detail_page = browser.new_page()
-                                    detail_page.goto(n.link, timeout=self.timeout)
-                                    self.human_delay(2, 3)
-                                    self._close_modal(detail_page)
-                                    # 多选择器兼容新旧版雪球文章页
-                                    content = detail_page.evaluate('''() => {
-                                        const selectors = [
-                                            '.article__bd__detail',
-                                            '.detail-content',
-                                            '.article-content',
-                                            '[class*="article-detail"]',
-                                            '[class*="detail_body"]',
-                                            '.stock-news-content',
-                                        ];
-                                        for (const sel of selectors) {
-                                            const el = document.querySelector(sel);
-                                            if (el && el.innerText.trim().length > 20) {
-                                                return el.innerText.trim();
-                                            }
-                                        }
-                                        // fallback: 取可见文本中最长的段落
-                                        const paras = document.querySelectorAll('p, div.article-text');
-                                        let best = '';
-                                        for (const p of paras) {
-                                            const t = p.innerText.trim();
-                                            if (t.length > best.length) best = t;
-                                        }
-                                        return best;
-                                    }''')
-                                    if content and len(content) > 20:
-                                        # 检查是否为免责声明/无用内容
-                                        if _is_disclaimer(content):
-                                            self.logger.debug(f"    跳过免责声明 ({len(content)}字)")
-                                            n.content = ""
-                                            n.link = ""  # 后续质量检测可以识别
-                                        else:
-                                            n.content = content[:5000]
-                                            self.logger.debug(f"    获取到 {len(content)} 字正文")
-                                    detail_page.close()
-                                except Exception:
-                                    try:
-                                        detail_page.close()
-                                    except Exception:
-                                        pass
+                self.logger.info("=== 爬取资讯 (API) ===")
+                result.news = self._crawl_news_via_api(symbol, max_count=30)
+                self.logger.info(f"获取 {len(result.news)} 条资讯")
 
                 # ========== 爬取公告 ==========
-                self.logger.info("=== 爬取公告 ===")
-                if self._switch_tab(page, '公告'):
-                    notices = self._parse_notices(page)
-                    result.notices = notices
-                    self.logger.info(f"获取 {len(notices)} 条公告")
-
-                    # 公告详情：SEC 用 title 摘要，雪球内部用页面提取
-                    for nt in notices:
-                        if not nt.link:
-                            continue
-                        if 'sec.gov' in nt.link:
-                            nt.content = self._extract_notice_summary_from_title(nt)
-                        else:
-                            try:
-                                detail = self._crawl_notice_detail(page, nt.link)
-                                if detail:
-                                    nt.content = detail.get('content', '')
-                                    nt.pdf_link = detail.get('pdf_link', '')
-                            except Exception:
-                                pass
+                self.logger.info("=== 爬取公告 (API) ===")
+                result.notices = self._crawl_notices_via_api(symbol, max_pages=max_pages)
+                self.logger.info(f"获取 {len(result.notices)} 条公告")
 
                 # ========== 爬取文章 ==========
                 self.logger.info(f"\n爬取 {max_articles} 篇文章详情...")
@@ -510,6 +433,197 @@ class XueqiuCrawler:
                 return True
         return False
 
+    def _crawl_discussions_via_api(self, symbol: str, max_pages: int = 10,
+                                    per_page: int = 50) -> List[Discussion]:
+        """通过雪球官方 API 爬取讨论（支持真正的分页翻页）。
+
+        API: GET https://xueqiu.com/query/v1/symbol/search/status.json
+        params: symbol, count, page, type=11 (讨论), sort=time, source=all
+        """
+        discussions = []
+        try:
+            cookies_path = Path(self.cookies_path)
+            if not cookies_path.exists():
+                cookies_path = Path(__file__).parent.parent.parent / 'config' / 'cookies' / 'xueqiu.json'
+            if cookies_path.exists():
+                with open(cookies_path) as f:
+                    cookies = json.load(f)
+            else:
+                self.logger.warning("未找到 cookies 文件，跳过 API 爬取")
+                return []
+
+            token = next((c['value'] for c in cookies if c['name'] == 'xq_a_token'), None)
+            if not token:
+                self.logger.warning("未找到 xq_a_token，跳过 API 爬取")
+                return []
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Cookie': f'xq_a_token={token}',
+                'Referer': f'https://xueqiu.com/S/{symbol}',
+                'Accept': 'application/json, text/plain, */*'
+            }
+
+            for page_num in range(1, max_pages + 1):
+                url = (f'https://xueqiu.com/query/v1/symbol/search/status.json'
+                       f'?count={per_page}&comment=0&symbol={symbol}'
+                       f'&hl=0&source=all&sort=time&page={page_num}&q=&type=11')
+                resp = requests.get(url, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    break
+                items = resp.json().get('list', [])
+                if not items:
+                    break
+
+                for item in items:
+                    user = item.get('user', {})
+                    if not isinstance(user, dict):
+                        continue
+                    screen_name = user.get('screen_name', '')
+                    source = item.get('source', '')
+                    raw_content = item.get('description', '') or ''
+                    # 去掉 HTML 标签
+                    content = re.sub(r'<[^>]+>', '', raw_content).strip()
+                    status_id = item.get('id', '')
+                    user_id = user.get('id', '')
+                    created = item.get('created_at', 0)
+                    ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d %H:%M') if created else ''
+                    link = f'https://xueqiu.com/{user_id}/{status_id}'
+                    is_col = str(item.get('type', '')) == '2'
+
+                    if content and len(content) > 5:
+                        discussions.append(Discussion(
+                            author=screen_name,
+                            content=content[:500],
+                            time=ts,
+                            link=link,
+                            is_column=is_col,
+                        ))
+
+                self.logger.info(f"  API 页 {page_num}: {len(items)} 条 "
+                                 f"(累计 {len(discussions)} 条, 专栏 {sum(1 for d in discussions if d.is_column)})")
+
+                if len(items) < 20:
+                    break
+
+                self.human_delay(1.0, 2.0)
+
+        except Exception as e:
+            self.logger.warning(f"API 爬取讨论失败: {e}")
+
+        return discussions
+
+    def _crawl_news_via_api(self, symbol: str, max_count: int = 20) -> List[News]:
+        """通过雪球官方 API 爬取资讯（新闻/文章）。
+
+        API: GET https://xueqiu.com/statuses/interview/search.json
+        params: symbol, count
+        """
+        news_list = []
+        try:
+            cookies_path = Path(self.cookies_path)
+            if not cookies_path.exists():
+                cookies_path = Path(__file__).parent.parent.parent / 'config' / 'cookies' / 'xueqiu.json'
+            if cookies_path.exists():
+                with open(cookies_path) as f:
+                    cookies = json.load(f)
+            else:
+                self.logger.warning("未找到 cookies，跳过资讯爬取")
+                return []
+            token = next((c['value'] for c in cookies if c['name'] == 'xq_a_token'), None)
+            if not token:
+                self.logger.warning("未找到 xq_a_token，跳过资讯爬取")
+                return []
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Cookie': f'xq_a_token={token}',
+                'Referer': f'https://xueqiu.com/S/{symbol}',
+                'Accept': 'application/json, text/plain, */*'
+            }
+            url = f'https://xueqiu.com/statuses/interview/search.json?symbol={symbol}&count={max_count}'
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                self.logger.warning(f"资讯 API 返回 {resp.status_code}")
+                return []
+            interviews = resp.json().get('interviews', [])
+            for item in interviews:
+                title = item.get('title', '')
+                raw_url = item.get('url', '')
+                link = raw_url if raw_url.startswith('http') else f'https://xueqiu.com{raw_url}'
+                created = item.get('createdAt', 0)
+                ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d %H:%M') if created else ''
+                content = item.get('content', '') or ''
+                news_list.append(News(
+                    title=title[:200],
+                    content=content[:3000],
+                    time=ts,
+                    source='新闻',
+                    link=link,
+                ))
+            self.logger.info(f"  资讯 API: {len(news_list)} 条")
+        except Exception as e:
+            self.logger.warning(f"API 爬取资讯失败: {e}")
+        return news_list
+
+    def _crawl_notices_via_api(self, symbol: str, max_pages: int = 10) -> List[Notice]:
+        """通过雪球官方 API 爬取公告。
+
+        API: GET https://xueqiu.com/statuses/stock_timeline.json
+        params: symbol_id, source=公告, count=10, page=N
+        """
+        notices = []
+        try:
+            cookies_path = Path(self.cookies_path)
+            if not cookies_path.exists():
+                cookies_path = Path(__file__).parent.parent.parent / 'config' / 'cookies' / 'xueqiu.json'
+            if cookies_path.exists():
+                with open(cookies_path) as f:
+                    cookies = json.load(f)
+            else:
+                self.logger.warning("未找到 cookies，跳过公告爬取")
+                return []
+            token = next((c['value'] for c in cookies if c['name'] == 'xq_a_token'), None)
+            if not token:
+                self.logger.warning("未找到 xq_a_token，跳过公告爬取")
+                return []
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Cookie': f'xq_a_token={token}',
+                'Referer': f'https://xueqiu.com/S/{symbol}',
+                'Accept': 'application/json, text/plain, */*'
+            }
+            for page_num in range(1, max_pages + 1):
+                url = (f'https://xueqiu.com/statuses/stock_timeline.json'
+                       f'?symbol_id={symbol}&count=10&source=%E5%85%AC%E5%91%8A&page={page_num}')
+                resp = requests.get(url, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+                items = data.get('list', [])
+                if not items:
+                    break
+                for item in items:
+                    desc = item.get('description', '') or ''
+                    # 提取标题：去掉 <a...> 后的链接部分
+                    title = re.sub(r'<a[^>]+>.*</a>', '', desc).strip()
+                    # 提取链接
+                    link_match = re.search(r'href="(https?://[^"]+)"', desc)
+                    link = link_match.group(1) if link_match else ''
+                    created = item.get('created_at', 0)
+                    ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d') if created else ''
+                    notices.append(Notice(
+                        title=title[:300],
+                        link=link,
+                        time=ts,
+                    ))
+                self.logger.info(f"  公告 API 页 {page_num}: {len(items)} 条 (累计 {len(notices)} 条)")
+                if len(items) < 10:
+                    break
+                self.human_delay(0.5, 1.5)
+        except Exception as e:
+            self.logger.warning(f"API 爬取公告失败: {e}")
+        return notices
+
     def _parse_items_with_pagination(self, page: Page, max_pages: int = 3,
                                       target_count: int = 30) -> List:
         items = []
@@ -528,7 +642,7 @@ class XueqiuCrawler:
                 new_items = page.query_selector_all('.timeline__item')
                 new_count = len(new_items) - len(items)
                 self.logger.info(f"分页 [{page_num}/{max_pages}] 本页新增: {max(new_count, 0)}, 累计: {len(new_items)} 条")
-                items = new_items
+                items = new_items  # DOM已刷新，new_items就是最新全量
                 if len(items) >= target_count:
                     break
                 # 点击"更多"
@@ -568,6 +682,9 @@ class XueqiuCrawler:
             content = re.sub(r'收藏.*$', '', content, flags=re.MULTILINE)
             content = content.strip()[:500]
 
+            # 检测专栏：来源=雪球（平台发布的专栏文章）
+            is_column = '来自雪球' in text
+
             link = ''
             for link_elem in item.query_selector_all('a'):
                 href = link_elem.get_attribute('href') or ''
@@ -577,7 +694,7 @@ class XueqiuCrawler:
 
             if content and len(content) > 10:
                 return Discussion(author=author, content=content,
-                                  time=time_str, link=link)
+                                  time=time_str, link=link, is_column=is_column)
         except Exception:
             pass
         return None
