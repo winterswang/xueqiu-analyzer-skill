@@ -1,7 +1,7 @@
 ---
 name: xueqiu-analyzer
 description: 雪球公司分析 Skill V3 — 自动化雪球舆情爬取 + 硬指标数据质检 + AI 深度投资报告
-version: 3.0.0
+version: 3.1.0
 author: winterswang
 ---
 
@@ -17,8 +17,11 @@ cd /root/code/xueqiu-analyzer-skill
 # 完整分析（爬取 + 评估 + 分析报告）
 .venv/bin/python -m xueqiu_analyzer.cli analyze TCOM
 
-# 只爬取数据
+# 只爬取数据（时间维度自动停止，按今天全部内容）
 .venv/bin/python -m xueqiu_analyzer.cli crawl TCOM
+
+# 爬取指定数量 + 自定义超时
+.venv/bin/python -m xueqiu_analyzer.cli crawl TCOM --max-pages 50 --max-articles 30 --timeout 1200
 
 # 只评估已有数据
 .venv/bin/python -m xueqiu_analyzer.cli evaluate data/TCOM_data_20260524_140620.json
@@ -33,7 +36,13 @@ cd /root/code/xueqiu-analyzer-skill
 .venv/bin/python -m xueqiu_analyzer.cli cookies
 ```
 
-**注意**: 需要先设置 `DEEPSEEK_API_KEY` 环境变量。
+**CLI 参数**：
+
+| 参数 | 默认值 | 说明 |
+|------|:---:|------|
+| `--max-pages` | 10 | 最大翻页数（兜底，实际由时间停止控制） |
+| `--max-articles` | 20 | 讨论详情富化上限（打开详情页补标题/评论） |
+| `--timeout` | 1200 | 超时秒数 |
 
 ---
 
@@ -47,10 +56,10 @@ cd /root/code/xueqiu-analyzer-skill
 │  CLI → Orchestrator (迭代编排)                                  │
 │          │                                                     │
 │          ├─ Crawler (Playwright 浏览器爬取)                     │
-│          │    ├─ discussions (讨论帖) ×10                       │
-│          │    ├─ news (资讯) ×9                                 │
-│          │    ├─ notices (公告) ×10                             │
-│          │    └─ articles (专栏文章) ×7                         │
+│          │    ├─ discussions (讨论帖) · 时间停止                 │
+│          │    ├─ articles (专栏文章) · 从讨论分离 + 详情富化     │
+│          │    ├─ news (资讯) · 时间停止                         │
+│          │    └─ notices (公告) · 首页 20 条                    │
 │          │                                                     │
 │          ├─ FinancialFetcher (财务数据)                         │
 │          │    ├─ 雪球 API → PE, PB, 市值, 52周高低              │
@@ -72,6 +81,63 @@ cd /root/code/xueqiu-analyzer-skill
 │         data/{SYMBOL}_report_{timestamp}.md                     │
 └────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 爬取机制（V3.1 时间维度驱动）
+
+### 时间停止策略
+
+爬取 讨论 和 资讯 时，不再按固定页数/条数限制，而是按**发布时间**判断：
+
+1. 每页解析 `.timeline__item` 中的 `time` 字段
+2. 当一页出现 ≥3 条"昨天"或日期格式（如 `05-24` / `2026-05-24`）→ 停止翻页
+3. 讨论 tab 默认使用「最新」排序（非热帖），确保按时间线获取今天全部内容
+
+### 翻页机制
+
+- 雪球使用传统页码分页（`[1] [2] ... [下一页]`），非无限滚动
+- 爬虫点击「下一页」链接逐页翻页
+- 每页解析后立即存入结果列表（DOM 元素在换页后失效，必须先解析再翻页）
+- 兜底：最多翻 `--max-pages` 页（默认 10），或连续 3 页无新内容时停止
+
+### 公告
+
+- 公告数量少，不翻页，只取第一页的 10-20 条
+- 不走时间停止（公告标题格式与讨论/资讯不同）
+
+### 专栏文章分离（四分类）
+
+爬取时为保持四分类模型（讨论/专栏/资讯/公告），在讨论页解析后自动分离：
+
+- 检测 timeline item 中的专栏标题（h3 含「专栏」）
+- **真文章**（正文 ≥80 字且不以「回复」开头）→ `articles[]`
+- **回复帖**（引用专栏的短回复）→ 保留在 `discussions[]`
+- 分离后删除讨论中的 `【专栏xxx】` 前缀残留
+
+### 讨论详情富化
+
+- 专栏文章优先富化（先 articles 后 discussions）
+- 取前 `--max-articles` 条有链接的讨论（默认 30）
+- 打开详情页提取：专栏文章标题、完整正文（最多 5000 字）、评论列表
+- 讨论富化上限 2000 字
+
+### 解析方式
+
+- 使用 `item.evaluate(JS)` 结构化提取，替代旧的 `inner_text() + regex`
+- Author: 从 `<a>` 标签提取，过滤掉"收起/展开/$股票名/时间串/icon"等噪音
+- Time: 从时间链接 regex 提取
+- Content: 优先 `.article__bd__detail` → 回退 `innerText` 减 chrome
+- 评论: 详情页 `.comment-item` → `innerText`
+- 去重: 按正文前 50 字符签名去重
+
+### 爬取耗时参考
+
+| 股票 | 讨论 | 专栏 | 资讯 | 公告 | 耗时 |
+|------|:---:|:---:|:---:|:---:|:---:|
+| AAPL | ~90 | ~10 | ~10 | ~10 | ~4 min |
+| 00700 | ~440 | ~20 | ~10 | ~10 | ~6 min |
+| SH600519 | ~490 | ~13 | ~10 | ~10 | ~6 min |
 
 ---
 
@@ -104,19 +170,36 @@ Round 1
 | name | str | 雪球显示名 |
 | price | str | 当前价 |
 | discussions | list[Discussion] | 讨论帖 |
+| articles | list[Article] | 专栏文章 |
 | news | list[News] | 资讯 |
 | notices | list[Notice] | 公告 |
-| articles | list[Article] | 专栏文章 |
 | financial_data | FinancialData | 财务指标 |
 | crawled_at | ISO timestamp | 爬取时间 |
 
 ### Discussion
 | 字段 | 说明 |
 |------|------|
-| author | 作者 |
-| content | 正文内容 |
+| author | 作者（JS 结构化提取，已过滤"收起/展开"等噪音） |
+| content | 正文（最长 2000 字符） |
 | time | 发布时间 |
 | link | 详情页链接 |
+| comments | list[str] · 评论列表（从详情页提取，最多 30 条） |
+| comment_count | int · 评论数 |
+| forward_count | int · 转发数 |
+| like_count | int · 赞数 |
+
+### Article
+| 字段 | 说明 |
+|------|------|
+| title | 专栏标题（如「专栏腾讯的熵增困境...」） |
+| author | 作者 |
+| content | 全文（最长 5000 字符，从详情页提取） |
+| time | 发布时间 |
+| link | 文章链接 |
+| article_id | 雪球文章 ID |
+| comments | list[str] · 评论列表（最多 30 条） |
+| comment_count | int · 评论数 |
+| like_count | int · 赞数 |
 
 ### News（🔧 V3 已修复正文提取）
 | 字段 | 说明 |
@@ -136,18 +219,9 @@ Round 1
 | pdf_link | PDF 下载链接 |
 | notice_type | 公告类型 |
 
-### Article
-| 字段 | 说明 |
-|------|------|
-| title | 文章标题 |
-| author | 作者 |
-| content | 全文（最长 10000 字符） |
-| time | 发布时间 |
-| link | 文章链接 |
-| article_id | 雪球文章 ID |
+---
 
 ### FinancialData
-| 字段 | 来源 | 说明 |
 |------|------|------|
 | pe_ttm | 雪球 API | PE(TTM) |
 | pb | 雪球 API | 市净率 |
@@ -173,10 +247,10 @@ Round 1
 内容完整率:
 | 类别 | 总数 | 有内容 | 完整率 |
 |------|:---:|:---:|:---:|
-| 资讯 | 9   | 9   | 100% ✅
+| 讨论 | 88  | 88  | 100% ✅
+| 专栏 | 11  | 11  | 100% ✅
+| 资讯 | 10  | 10  | 100% ✅
 | 公告 | 10  | 10  | 100% ✅
-| 文章 | 7   | 4   | 57%  ✅
-| 讨论 | 10  | 10  | 100% ✅
 
 财务数据完整性: 7/7 100% ✅
 ```
@@ -184,7 +258,7 @@ Round 1
 **预警触发条件**：
 - 资讯有内容率 < 50% → 建议重爬新闻
 - 公告有内容率 < 30% → 建议重爬公告
-- 文章数为 0 → 建议重爬文章
+- 专栏数为 0 → 建议重爬专栏
 - 财务字段缺失 → 告警
 - 健康分 < 70 → 跳过 LLM 评估，直接定向重爬
 
@@ -296,16 +370,20 @@ tests/
 
 ## 已知限制
 
-1. **讨论评论**：不爬取评论（低价值，且雪球限制评论可见）
-2. **多年 ROIC**：financial-sdk 暂未集成多年度 ROIC 趋势
-3. **飞书通知**：通过文件 IPC（`/tmp/`）中转，未直连 API
-4. **爬虫脆弱**：严重依赖雪球 DOM 结构，UI 变更可能失效
-5. **无集成测试**：缺少端到端 Playwright + LLM 测试
+1. **时间停止精度**：讨论按"昨天"判断，热门股票当天可达 400+ 条，触及 `--max-pages 50` 兜底
+2. **专栏文章误判**：少量"回复"型内容可能被错误归入 articles（<5%），已通过正文长度和"回复"前缀过滤
+3. **评论区提取**：详情页评论区选择器可能因页面改版而失效
+4. **公告不翻页**：仅取第一页，旧公告不会抓取
+5. **多年 ROIC**：financial-sdk 暂未集成多年度 ROIC 趋势
+6. **飞书通知**：通过文件 IPC（`/tmp/`）中转，未直连 API
+7. **爬虫脆弱**：严重依赖雪球 DOM 结构，UI 变更可能失效
+8. **无集成测试**：缺少端到端 Playwright + LLM 测试
 
 ---
 
 ## 版本历史
 
+- **V3.1.0**: 时间维度停止翻页、四分类模型（讨论/专栏/资讯/公告）、JS 结构化提取、评论爬取、专栏详情富化
 - **V3.0.0**: 完整模块化重构，financial-sdk 替换 AkShare，Layer 1 硬指标质检
 - **V2.2**: 多年 ROIC，公告详情页
 - **V2.1**: 10轮迭代，30分超时，Token 统计

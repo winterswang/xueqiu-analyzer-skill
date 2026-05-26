@@ -52,6 +52,9 @@ class Article:
     time: str
     link: str = ""
     article_id: str = ""
+    comments: List[str] = field(default_factory=list)
+    comment_count: int = 0
+    like_count: int = 0
 
 
 @dataclass

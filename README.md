@@ -1,438 +1,14 @@
-# 雪球股票分析 Skill
+# 雪球公司分析 Skill V3
 
 > 输入股票代码，自动爬取雪球社区数据 → 多源财务数据 → AI 深度分析 → 生成结构化投资报告。
 
-**版本**: v2.2.1 ｜ **分析模型**: GLM-5 ｜ **爬虫引擎**: Playwright
+**版本**: v3.1.0 ｜ **爬虫引擎**: Playwright ｜ **分析模型**: DeepSeek
 
 ---
 
-## 1. 项目概述
+## 1. 快速开始
 
-### 一句话定位
-
-基于雪球社区数据的全自动股票投资分析工具，覆盖 A 股 / 港股 / 美股。
-
-### 核心价值
-
-| 能力 | 说明 |
-|------|------|
-| **社区舆情挖掘** | 爬取讨论/资讯/公告/文章，提取散户和机构观点 |
-| **多维财务数据** | 雪球 API（PE/PB/ROE）+ AkShare（利润率/增速）+ 多年 ROIC |
-| **智能迭代评估** | 每轮爬取后用 LLM 评估信息充分性，不足自动补充，最多 10 轮 |
-| **结构化报告** | 8 大主题分析（估值/商业模式/财务/竞争/管理层/风险/用户/前景） |
-| **自动分发** | Gist 上传 + 飞书通知，一键触达 |
-
-### 适用场景
-
-- "帮我分析下 TCOM 在雪球上的舆论和基本面"
-- "看看 00700 最近的讨论都在说什么"
-- "生成一份 PD 的投资分析报告"
-
----
-
-## 2. 架构设计
-
-### 整体架构
-
-```
-                          ┌──────────────────────┐
-                          │   用户输入股票代码     │
-                          │   如: TCOM, 00700    │
-                          └──────────┬───────────┘
-                                     │
-                    ┌────────────────┼────────────────┐
-                    ▼                ▼                ▼
-             ┌──────────┐    ┌────────────┐    ┌──────────┐
-             │ 全流程分析 │    │ 智能迭代分析 │    │  单独爬取  │
-             │run_analysis│   │smart_crawler│   │  crawler  │
-             └─────┬─────┘    └──────┬──────┘    └─────┬────┘
-                   │                │                  │
-                   └────────┬───────┘                  │
-                            ▼                          │
-                   ┌─────────────────┐                 │
-                   │ stock_crawler_v2 │ ◄───────────────┘
-                   │  Playwright 爬虫  │
-                   └────────┬────────┘
-                            │
-              ┌─────────────┼─────────────┐
-              ▼             ▼             ▼
-       ┌──────────┐  ┌──────────┐  ┌──────────────┐
-       │ 讨论 Tab  │  │ 资讯 Tab  │  │ 公告 + 文章   │
-       └──────────┘  └──────────┘  └──────────────┘
-                            │
-              ┌─────────────┼─────────────┐
-              ▼             ▼             ▼
-       ┌──────────┐  ┌──────────┐  ┌──────────────┐
-       │financial  │  │  data    │  │  llm_client  │
-       │_fetcher   │  │_quality  │  │  统一 LLM     │
-       └─────┬─────┘  └────┬─────┘  └──────┬───────┘
-             │             │                │
-             └──────┬──────┘                │
-                    ▼                       ▼
-             ┌──────────────────────────────────┐
-             │         report_generator          │
-             │  Prompt 1 评估 + Prompt 2 分析     │
-             └──────────────┬───────────────────┘
-                            │
-                            ▼
-                   ┌─────────────────┐
-                   │   输出 + 分发     │
-                   │ 本地文件 / Gist   │
-                   │ / 飞书通知        │
-                   └─────────────────┘
-```
-
-### 两条执行路径
-
-#### 路径 A：全流程分析 (`run_analysis.py`)
-
-```
-run_analysis.py TCOM
-  ├── 步骤 1: stock_crawler_v2 → 爬取讨论/资讯/公告/文章
-  ├── 步骤 2: financial_fetcher → 财务数据（雪球API + AkShare）
-  ├── 步骤 3: report_generator → GLM-5 生成报告
-  └── 步骤 4: 保存 JSON 原始数据 + Markdown 报告
-```
-
-**特点**: 单次爬取、一次性分析，适合快速查看。
-
-#### 路径 B：智能迭代分析 (`smart_crawler_v2.py`)
-
-```
-smart_crawler_v2.py TCOM
-  ┌─────────────────────────────────────────┐
-  │  第 N 轮迭代 (N = 1..10)                 │
-  │  ├── crawl_round() → 爬取本轮数据        │
-  │  ├── 合并去重（按类型 + link 去重）        │
-  │  ├── build_evaluation_prompt() → 构建评估 │
-  │  ├── call_llm() → Prompt 1 评估信息充分性  │
-  │  └── 判断: 评分 >= 150?                  │
-  │       ├── 是 → 进入分析                   │
-  │       └── 否 → 继续下一轮（N < 10）        │
-  ├─────────────────────────────────────────┤
-  │  财务数据获取（第 1 轮之后）               │
-  ├─────────────────────────────────────────┤
-  │  Prompt 2 → 深度分析（8主题 + 投资建议）    │
-  ├─────────────────────────────────────────┤
-  │  输出: evaluation.md + report.md          │
-  │  分发: Gist 上传 + 飞书通知               │
-  └─────────────────────────────────────────┘
-```
-
-**特点**: 多轮迭代、信息充分性驱动、评分终止机制，分析质量更高。
-
-### 模块角色
-
-| 模块 | 文件 | 行数 | 角色 |
-|------|------|------|------|
-| **爬虫引擎** | `stock_crawler_v2.py` | ~1375 | Playwright 浏览器自动化：登录、Tab 切换、滚动加载、内容解析、去重 |
-| **智能迭代** | `smart_crawler_v2.py` | ~1021 | 多轮评估驱动爬取、评分 ≥150 终止、Prompt 构建、Gist/飞书分发 |
-| **LLM 客户端** | `llm_client.py` | ~168 | 统一 API Key 回退链、base_url 发现、异常链保留 |
-| **报告生成** | `report_generator.py` | ~338 | GLM-5 调用封装 + 报告模板渲染 |
-| **报告模板** | `report_template.py` | ~382 | Markdown 模板：表格格式化、Prompt 构建 |
-| **财务数据** | `financial_fetcher.py` | ~302 | 雪球 API + AkShare + 多年 ROIC |
-| **数据质量** | `data_quality_checker.py` | ~223 | 内容清洗、低质量过滤、统计 |
-| **全流程** | `run_analysis.py` | ~164 | V1 兼容的单次全流程编排 |
-| **配置** | `config.py` | ~70 | 路径/日志/目录管理 |
-| **登录** | `login_xueqiu.py` | ~110 | 独立登录脚本，保存 cookies |
-
----
-
-## 3. 数据流
-
-### 完整数据流图
-
-```
-                           输入: 股票代码 (symbol)
-                                       │
-                    ┌──────────────────┴──────────────────┐
-                    ▼                  ▼                  ▼
-             ┌────────────┐    ┌────────────┐    ┌──────────────┐
-             │ 讨论 Tab    │    │ 资讯 Tab    │    │  公告 Tab     │
-             │ .discussion │    │ .news       │    │  .notice      │
-             └─────┬──────┘    └─────┬──────┘    └──────┬───────┘
-                   │                │                   │
-                   │  每项: {title, content, author, time, link}  │
-                   └────────────────┼───────────────────┘
-                                    │
-                              ┌─────▼──────┐
-                              │  去重合并    │ (seen_links: set)
-                              │  按类型存储  │
-                              └─────┬──────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-             ┌────────────┐ ┌────────────┐ ┌──────────────┐
-             │ 雪球 API    │ │  AkShare   │ │ akshare       │
-             │ PE/PB/ROE   │ │ 利润率/增速 │ │ 多年 ROIC     │
-             │ 市值/52周   │ │            │ │              │
-             └─────┬──────┘ └─────┬──────┘ └──────┬───────┘
-                   └──────────────┼───────────────┘
-                                  │
-                          ┌───────▼───────┐
-                          │ financial_data │
-                          │ {pe_ttm, pb,  │
-                          │  roe, roic,   │
-                          │  gross_margin,│
-                          │  net_margin,  │
-                          │  revenue_growth,│
-                          │  profit_growth,│
-                          │  market_cap,  │
-                          │  high52w,     │
-                          │  low52w}      │
-                          └───────┬───────┘
-                                  │
-                    ┌─────────────┼─────────────┐
-                    ▼             ▼             ▼
-             ┌──────────┐  ┌──────────┐  ┌──────────┐
-             │ Prompt 1  │  │ Prompt 2 │  │  输出     │
-             │ 信息评估   │  │ 深度分析  │  │          │
-             └─────┬────┘  └─────┬────┘  └─────┬────┘
-                   │             │              │
-                   ▼             ▼              ▼
-            ┌───────────┐ ┌───────────┐ ┌────────────┐
-            │Evaluation  │ │ Analysis  │ │   分发      │
-            │  Result    │ │  Report   │ │            │
-            │{total_score│ │(Markdown) │ │ Gist 上传   │
-            │ scores,    │ │           │ │ 飞书通知    │
-            │ need_more, │ │           │ │            │
-            │ suggestions│ │           │ │            │
-            │}           │ │           │ │            │
-            └───────────┘ └───────────┘ └────────────┘
-```
-
-### 数据节点说明
-
-| 节点 | 输入 | 输出 | 格式 |
-|------|------|------|------|
-| **爬虫** | symbol (股票代码) | CrawlResult {discussions, news, notices, articles} | Python dataclass |
-| **去重** | 原始爬取列表 | 去重后的累积列表 | `seen_links: set[str]` |
-| **财务** | symbol + cookies | FinancialData {pe_ttm, pb, roe, ...} | Python dataclass |
-| **Prompt 1** | 累积内容 + 评分标准 + 财务数据 | EvaluationResult {total_score, scores, need_more, ...} | JSON → dataclass |
-| **Prompt 2** | 累积内容 + 财务数据 | Analysis Report | Markdown |
-| **分发** | Markdown 文件路径 | Gist URL + 飞书消息 | HTTP + Feishu API |
-
----
-
-## 4. 执行流
-
-### 4.1 全流程分析 (`run_analysis.py`)
-
-```bash
-# 基础用法
-python scripts/run_analysis.py TCOM
-
-# 完整参数
-python scripts/run_analysis.py 00700 \
-  --max-discussions 50 \
-  --max-news 50 \
-  --max-articles 20 \
-  --max-pages 10 \
-  --output /path/to/output
-```
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `symbol` | 必填 | 股票代码（TCOM / 00700 / SH600519） |
-| `--max-discussions` | 30 | 最大讨论数 |
-| `--max-news` | 30 | 最大资讯数 |
-| `--max-articles` | 10 | 最大文章数 |
-| `--max-pages` | 5 | 最大翻页数 |
-| `--output` | `data/reports/` | 输出目录 |
-
-**内部步骤**:
-
-1. **爬取**: `XueqiuStockCrawlerV2(headless=True).crawl(symbol, ...)` → `CrawlResult`
-2. **财务**: `FinancialDataFetcher().fetch(symbol, cookies)` → `FinancialData`
-3. **报告**: `ReportGenerator().generate(stock_data)` → Markdown
-4. **保存**: JSON 原始数据 + Markdown 报告到 `data/reports/`
-
-### 4.2 智能迭代分析 (`smart_crawler_v2.py`)
-
-```bash
-# 基础用法（推荐）
-python scripts/smart_crawler_v2.py TCOM
-
-# 限制轮次
-# 修改 smart_crawler_v2.py 中 MAX_ROUNDS_DEFAULT = 5
-```
-
-**执行流程（伪代码）**:
-
-```python
-symbol = "TCOM"
-
-# 初始化
-crawler = SmartCrawlerV2(symbol)
-crawler.fetch_financial_data()           # 获取财务数据
-
-# 迭代循环（最多 10 轮）
-for round in range(1, MAX_ROUNDS + 1):
-    # 1. 爬取本轮数据
-    new_items = crawler.crawl_round(max_pages=3, max_articles=10)
-    if sum(new_items.values()) == 0:
-        break  # 无新数据，退出循环
-
-    # 2. 评估信息充分性
-    prompt = crawler.build_evaluation_prompt()
-    result = crawler.call_llm(prompt, max_tokens=2000)
-    eval_result = crawler.parse_evaluation(result)
-
-    # 3. 输出统计
-    crawler.print_round_stats(round, eval_result)
-
-    # 4. 判断终止条件
-    if eval_result.total_score >= SCORE_THRESHOLD:  # 150
-        break
-
-# 生成最终报告
-report = crawler.generate_final_report()
-# 上传 Gist + 飞书通知
-```
-
-**终止条件**:
-
-| 条件 | 说明 |
-|------|------|
-| `total_score >= 150` | 信息充分，提前终止 |
-| `round >= MAX_ROUNDS` | 达到最大轮次（10） |
-| 本轮无新增数据 | 已无更多数据可爬 |
-
-### 4.3 单独爬取（不分析）
-
-```bash
-python scripts/stock_crawler_v2.py 00700
-```
-
-仅爬取数据，生成 `data/reports/{symbol}_crawl_result_*.json`。
-
----
-
-## 5. 核心模块详解
-
-### 5.1 `llm_client.py` — 统一 LLM 客户端
-
-| 功能 | 说明 |
-|------|------|
-| **API Key 回退链** | `BAILIAN_API_KEY` → `DASHSCOPE_API_KEY` → `OPENAI_API_KEY` → `~/.openclaw/openclaw.json` |
-| **base_url 自动发现** | 从 `openclaw.json` 的 `models.providers` 中读取 |
-| **异常链保留** | `LLMError` 继承自 `Exception`，用 `from e` 保留原始 traceback |
-| **默认模型** | `glm-5` |
-
-```python
-from llm_client import LLMClient
-client = LLMClient()
-result = client.chat("分析腾讯的商业模式", max_tokens=8000)
-```
-
-### 5.2 `stock_crawler_v2.py` — Playwright 爬虫
-
-| 功能 | 实现 |
-|------|------|
-| **登录** | JavaScript 弹窗拦截 + cookies 复用 |
-| **页面切换** | Tab 切换（讨论/资讯/公告）→ 滚动加载 → 内容提取 |
-| **数据解析** | `_parse_discussions()` / `_parse_news()` / `_parse_articles()` |
-| **去重** | 按 link 去重，防止翻页重复 |
-| **反检测** | stealth 脚本注入、随机延迟、headless 模式 |
-
-返回值: `CrawlResult` dataclass，包含 `discussions`, `news`, `notices`, `articles`, `name`, `price`.
-
-### 5.3 `financial_fetcher.py` — 财务数据获取
-
-| 数据源 | 获取指标 |
-|--------|----------|
-| **雪球 API** | PE(TTM), PB, ROE, 市值, 52周高低 |
-| **AkShare** | 毛利率, 净利率, 营收增速, 利润增速 |
-| **akshare_service** | 5 年 ROIC 趋势 |
-
-降级策略: 任一数据源不可用时跳过，输出中标注缺失。
-
-### 5.4 `smart_crawler_v2.py` — 智能迭代引擎
-
-核心类: `SmartCrawlerV2`
-
-| 方法 | 功能 |
-|------|------|
-| `crawl_round()` | 执行一轮爬取，合并去重 |
-| `fetch_financial_data()` | 获取财务数据 |
-| `build_evaluation_prompt()` | 构建 Prompt 1 |
-| `build_analysis_prompt()` | 构建 Prompt 2 |
-| `call_llm()` | 调用 GLM-5 |
-| `print_round_stats()` | 输出本轮统计 |
-| `generate_final_report()` | 生成最终报告 |
-| `_upload_gist()` | 上传 Gist |
-| `_send_feishu()` | 飞书通知 |
-
-### 5.5 `report_generator.py` — 报告生成
-
-```python
-from report_generator import ReportGenerator
-
-gen = ReportGenerator()
-report_md = gen.generate(stock_data)
-```
-
-内部调用 `report_template.py` 中定义的模板函数：
-- `format_articles_table()` — 文章列表表格
-- `format_discussions_table()` — 讨论列表表格
-- `format_financial_table()` — 财务数据表格
-- `format_key_data_table()` — 关键数据表格
-- `format_reference_summary()` — 引用汇总
-- `build_analysis_prompt()` — 构建分析 Prompt
-
----
-
-## 6. 配置说明
-
-### 必需配置
-
-**API Key**（至少设置一个）:
-```bash
-export BAILIAN_API_KEY="your-key-here"
-# 或
-export DASHSCOPE_API_KEY="your-key-here"
-# 或
-export OPENAI_API_KEY="your-key-here"
-```
-
-**雪球登录凭据**:
-- `config/xueqiu_credentials.yaml` — 用户名/密码
-- `config/xueqiu_cookies.json` — 登录后自动保存，下次复用
-
-### 可选配置
-
-**`config/config.yaml`**:
-```yaml
-crawler:
-  headless: true          # 无头模式
-  scroll_delay: 2         # 滚动间隔（秒）
-  page_timeout: 30        # 页面超时（秒）
-
-llm:
-  model: "glm-5"          # 模型名
-  timeout: 1800           # API 超时（秒）
-  max_tokens_evaluation: 2000
-  max_tokens_analysis: 8000
-
-smart_crawler:
-  max_rounds: 10          # 最大迭代轮次
-  score_threshold: 150    # 评分终止阈值
-```
-
-### 环境变量
-
-| 变量 | 用途 | 优先级 |
-|------|------|--------|
-| `BAILIAN_API_KEY` | 百炼 API Key | 最高 |
-| `DASHSCOPE_API_KEY` | DashScope API Key | 次高 |
-| `OPENAI_API_KEY` | OpenAI API Key | 第三 |
-| `~/.openclaw/openclaw.json` | OpenClaw 配置 fallback | 最低 |
-
----
-
-## 7. 快速开始
-
-### 7.1 安装依赖
+### 安装
 
 ```bash
 cd /root/code/xueqiu-analyzer-skill
@@ -440,208 +16,398 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 7.2 登录雪球（首次使用）
+### 新鲜 cookies（首次使用）
 
 ```bash
-# 填写 config/xueqiu_credentials.yaml 后再运行
-python scripts/login_xueqiu.py
+.venv/bin/python -m xueqiu_analyzer.cli cookies
 ```
 
-成功后在 `config/` 下生成 `xueqiu_cookies.json`，后续自动复用。
-
-### 7.3 运行分析
+### 爬取 + 分析
 
 ```bash
-# 推荐：智能迭代分析
-python scripts/smart_crawler_v2.py TCOM
+# 完整分析：爬取 → 质检 → LLM评估 → 深度分析报告
+.venv/bin/python -m xueqiu_analyzer.cli analyze TCOM
 
-# 或：全流程分析
-python scripts/run_analysis.py 00700
+# 只爬数据（时间维度自动停止）
+.venv/bin/python -m xueqiu_analyzer.cli crawl TCOM
+
+# 自定义翻页和富化
+.venv/bin/python -m xueqiu_analyzer.cli crawl TCOM --max-pages 50 --max-articles 30 --timeout 1200
+
+# 仅评估已有数据
+.venv/bin/python -m xueqiu_analyzer.cli evaluate data/TCOM_data_20260526.json
 ```
 
-### 7.4 查看结果
+### CLI 参数
+
+| 参数 | 默认 | 说明 |
+|------|:---:|------|
+| `--max-pages` | 10 | 最大翻页数（兜底，实际由时间停止控制） |
+| `--max-articles` | 20 | 详情富化上限（打开详情页补正文/评论） |
+| `--timeout` | 1200 | 总超时秒数 |
+| `--template` | analysis | 报告模板（analysis / conservative） |
+
+---
+
+## 2. 输出示例
 
 ```
-data/reports/
-├── TCOM_evaluation_20260524_120000.md     # 评估报告（Prompt 1）
-├── TCOM_smart_v2_report_20260524_120000.md # 分析报告（Prompt 2）
-└── TCOM_smart_v2_data_20260524_120000.json # 完整原始数据
+爬取完成: 88 讨论, 11 专栏, 10 资讯, 10 公告
+
+data/
+├── AAPL_data_20260526_224432.json      # 完整原始数据
+├── AAPL_evaluation_20260526_*.md       # 信息充分性评估
+└── AAPL_report_20260526_*.md           # 投资分析报告
 ```
 
 ---
 
-## 8. 输出文件
-
-### 目录结构
+## 3. 架构设计
 
 ```
-data/reports/
-├── {symbol}_smart_v2_report_{timestamp}.md     # 投资分析报告（Markdown）
-├── {symbol}_evaluation_{timestamp}.md          # 信息充分性评估
-├── {symbol}_smart_v2_data_{timestamp}.json     # 完整爬取数据 + 评估结果
-├── {symbol}_report_{timestamp}.md              # V1 全流程报告
-└── {symbol}_data_{timestamp}.json              # V1 原始数据
+┌──────────────────────────────────────────────────────┐
+│                   xueqiu-analyzer V3                  │
+├──────────────────────────────────────────────────────┤
+│                                                      │
+│  CLI → Orchestrator                                  │
+│          │                                           │
+│          ├─ Crawler (Playwright)                     │
+│          │    ├─ discussions · 时间停止               │
+│          │    ├─ articles (专栏) · 自动分离 + 详情富化 │
+│          │    ├─ news · 时间停止                      │
+│          │    └─ notices · 首页 20 条                 │
+│          │                                           │
+│          ├─ FinancialFetcher                         │
+│          │    ├─ 雪球 API → PE/PB/市值/52周           │
+│          │    └─ financial-sdk → ROE/ROIC/利润率/增速  │
+│          │                                           │
+│          ├─ QualityChecker (Layer 1: 硬指标)          │
+│          │    └─ 内容完整率 + 健康分 → <70 定向重爬    │
+│          │                                           │
+│          ├─ Evaluator (Layer 2: LLM 评分)            │
+│          │    └─ 8维度 × 25分 → ≥150 进入分析         │
+│          │                                           │
+│          └─ Analyzer (LLM 深度分析)                   │
+│               └─ 执行摘要 + 8主题 + 投资决策           │
+│                                                      │
+└──────────────────────────────────────────────────────┘
 ```
 
-### 报告内容
+### 核心模块
 
-**评估报告 (Prompt 1)**:
-
-- 8 个主题评分（满分 25 × 8 = 200）
-- 每项评分理由 + 原文证据
-- 信息来源可靠性
-- 内容覆盖分析（优势/缺口领域）
-- Token 分项统计
-- 爬取建议
-
-**分析报告 (Prompt 2)**:
-
-- 执行摘要（估值判断/投资建议/核心逻辑/关键风险）
-- 8 个主题深度分析（带原文引用）
-- 投资决策（入场条件/跟踪指标/退出条件）
+| 模块 | 路径 | 职责 |
+|------|------|------|
+| `crawler.py` | `src/xueqiu_analyzer/` | Playwright 爬虫：登录、Tab切换、分页、JS结构化提取 |
+| `models.py` | 同上 | 数据模型：Discussion/Article/News/Notice/FinancialData |
+| `quality.py` | 同上 | Layer 1 硬指标：内容完整率、健康分、定向重爬建议 |
+| `evaluator.py` | 同上 | Layer 2 LLM 评分：8维度充分性评估 |
+| `analyzer.py` | 同上 | LLM 深度分析：执行摘要 + 8主题 + 投资决策 |
+| `financial_fetcher.py` | 同上 | 财务数据：雪球API + financial-sdk CLI |
+| `cli.py` | 同上 | CLI 入口：analyze/crawl/evaluate/reanalyze/cookies |
+| `orchestrator.py` | 同上 | 迭代编排：crawl→quality→evaluate→analyze |
 
 ---
 
-## 9. OpenClaw Agent 使用指引
+## 4. 爬取机制（V3.1）
 
-> **这是专门写给 OpenClaw AI Agent 的参考手册。当用户在飞书或任何 IM 中对你说要分析某只股票时，参考本节执行。**
+### 时间维度停止
+
+不再按固定页数/条数停止，而是按**发布时间**判断：
+
+1. 每页解析 `.timeline__item` 中的时间字段
+2. 当一页出现 ≥3 条"昨天"或日期格式（`05-24` / `2026-05-24`）→ 停止翻页
+3. 讨论 tab 固定「最新」排序，确保按时间线获取今天全部内容
+
+### 翻页机制
+
+- 雪球使用传统页码分页（`[1] [2] ... [下一页]`），非无限滚动
+- 爬虫点击「下一页」逐页翻页，每页解析后立即存入（DOM 换页失效）
+- 兜底：最多 `--max-pages` 页，或连续 3 页无新内容时停止
+
+### 专栏文章分离
+
+从讨论页自动分离专栏文章：
+
+```
+检测 h3 含「专栏」→  正文 ≥80字 & 不以「回复」开头 → articles[]
+                     正文 <80字 或 以「回复」开头  → discussions[]（清理前缀）
+```
+
+### 详情富化
+
+- 专栏文章优先：先 articles 后 discussions
+- 打开详情页提取：完整正文（专栏 ≤5000字、讨论 ≤2000字）、评论列表（最多 30 条）
+
+### 公告
+
+仅取第一页 10-20 条，不翻页（公告格式与时间停止不兼容）。
+
+### 解析方式
+
+使用 `item.evaluate(JS)` 结构化提取，替代旧的 `inner_text() + regex`：
+
+| 提取项 | 方法 |
+|--------|------|
+| Author | `<a>` 标签提取，过滤"收起/展开/$股票名/时间串/icon" |
+| Time | 时间链接 regex |
+| Content | 优先 `.article__bd__detail` → 回退 `innerText` 减 chrome |
+| Comments | 详情页 `.comment-item` → `innerText` |
+| 去重 | 正文前 50 字符签名 |
+
+### 爬取性能
+
+| 股票 | 讨论 | 专栏 | 资讯 | 公告 | 耗时 |
+|------|:---:|:---:|:---:|:---:|:---:|
+| 🍎 AAPL | ~90 | ~10 | ~10 | ~10 | ~4 min |
+| 🐧 00700 | ~440 | ~20 | ~10 | ~10 | ~6 min |
+| 🍶 茅台 | ~490 | ~13 | ~10 | ~10 | ~6 min |
+
+---
+
+## 5. 数据模型
+
+### CrawlResult
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| symbol | str | 股票代码 |
+| name | str | 雪球显示名 |
+| price | str | 当前价 |
+| discussions | list[Discussion] | 讨论帖 |
+| articles | list[Article] | 专栏文章 |
+| news | list[News] | 资讯 |
+| notices | list[Notice] | 公告 |
+| financial_data | FinancialData | 财务指标 |
+| crawled_at | ISO timestamp | 爬取时间 |
+
+### Discussion
+
+| 字段 | 说明 |
+|------|------|
+| author | 作者（JS 结构化提取） |
+| content | 正文（≤2000 字符） |
+| time | 发布时间 |
+| link | 详情页链接 |
+| comments | list[str] · 评论区（≤30 条） |
+| comment_count / forward_count / like_count | 互动数据 |
+
+### Article
+
+| 字段 | 说明 |
+|------|------|
+| title | 专栏标题（如「专栏腾讯的熵增困境...」） |
+| author | 作者 |
+| content | 全文（≤5000 字符，从详情页提取） |
+| time | 发布时间 |
+| link | 文章链接 |
+| article_id | 雪球文章 ID |
+| comments / comment_count / like_count | 互动数据 |
+
+### News
+
+| 字段 | 说明 |
+|------|------|
+| title | 标题（timeline 拆出） |
+| content | 正文（详情页提取，≤5000 字符） |
+| time | 发布时间 |
+| source | 来源（新闻/公告/研报/媒体） |
+| link | 外部链接 |
+
+### Notice
+
+| 字段 | 说明 |
+|------|------|
+| title | 公告标题 |
+| content | SEC→结构化摘要；雪球内部→正文 |
+| link | SEC EDGAR 或雪球详情页 |
+| pdf_link | PDF 下载链接 |
+| notice_type | 公告类型 |
+
+### FinancialData
+
+| 字段 | 来源 | 说明 |
+|------|------|------|
+| pe_ttm | 雪球 API | PE(TTM) |
+| pb | 雪球 API | 市净率 |
+| roe | financial-sdk (雪球 fallback) | ROE |
+| gross_margin | financial-sdk | 毛利率 |
+| net_margin | financial-sdk | 净利率 |
+| revenue_growth | financial-sdk | 营收增速 YoY |
+| profit_growth | financial-sdk | 利润增速 YoY |
+| market_cap | 雪球 API | 总市值 |
+| low52w / high52w | 雪球 API | 52周区间 |
+| yearly_roic | (暂空) | 多年 ROIC 趋势 |
+
+---
+
+## 6. 迭代分析流程
+
+```
+Round 1
+  ├─ crawl (pages=5, articles=10)
+  ├─ QualityChecker → 健康分
+  │   ├─ < 70 → 定向重爬
+  │   └─ ≥ 70 → Evaluator (LLM 8维度评分)
+  │       ├─ ≥ 150 → ✅ 进入分析
+  │       ├─ < 150 & round < max → 🔄 继续
+  │       └─ round = max → ⚠️ 强制进入
+```
+
+### 质量报告（Layer 1 硬指标）
+
+```
+📊 爬取数据质量报告
+健康分: 91/100 ✅
+
+内容完整率:
+| 类别 | 总数 | 有内容 | 完整率 |
+|------|:---:|:---:|:---:|
+| 讨论 | 88  | 88  | 100% ✅
+| 专栏 | 11  | 11  | 100% ✅
+| 资讯 | 10  | 10  | 100% ✅
+| 公告 | 10  | 10  | 100% ✅
+
+财务数据: 7/7 100% ✅
+```
+
+### LLM 评分（Layer 2）
+
+| 主题 | 满分 | 评估内容 |
+|------|:---:|----------|
+| 估值分析 | 25 | DCF/相对估值/历史对比 |
+| 商业模式 | 25 | 护城河/可持续性 |
+| 财务质量 | 25 | 利润率/ROE/FCF/增速 |
+| 竞争格局 | 25 | 竞对/市场份额/壁垒 |
+| 管理层 | 25 | 履历/战略/资本配置 |
+| 风险因素 | 25 | 风险识别与量化 |
+| 用户价值 | 25 | 真实用户反馈/NPS |
+| 未来前景 | 25 | 增长逻辑/第二曲线 |
+
+总分 ≥150 进入最终分析。
+
+---
+
+## 7. 配置
+
+`src/xueqiu_analyzer/config.yaml`：
+
+```yaml
+llm:
+  model: deepseek-chat
+  base_url: https://api.deepseek.com
+
+crawler:
+  headless: true
+  delay_min: 3
+  delay_max: 8
+
+evaluator:
+  score_threshold: 150
+  max_rounds: 3
+
+quality:
+  health_threshold: 70
+  news_min_ratio: 0.5
+  notice_min_ratio: 0.3
+  min_content_length: 20
+```
+
+**API Key 优先级**：
+1. 环境变量 `DEEPSEEK_API_KEY`
+2. `config/config.yaml` 中的占位符（自动替换）
+3. OpenClaw provider 配置
+
+---
+
+## 8. 项目结构
+
+```
+xueqiu-analyzer-skill/
+├── SKILL.md                     # Skill 元数据 + 完整文档
+├── README.md                    # 本文档
+├── requirements.txt
+├── src/xueqiu_analyzer/
+│   ├── __init__.py
+│   ├── cli.py                   # CLI 入口
+│   ├── orchestrator.py          # 迭代编排
+│   ├── crawler.py               # Playwright 爬虫 (~1050行)
+│   ├── models.py                # 数据模型 (dataclass)
+│   ├── config.py                # 配置加载
+│   ├── config.yaml              # 配置文件
+│   ├── financial_fetcher.py     # 财务数据
+│   ├── quality.py               # Layer 1 硬指标
+│   ├── evaluator.py             # Layer 2 LLM 评分
+│   ├── analyzer.py              # LLM 深度分析
+│   └── llm_client.py            # LLM API 封装
+├── prompts/
+│   ├── evaluation.md            # 充分性评估 Prompt
+│   ├── analysis.md              # 深度分析 Prompt
+│   └── conservative.md          # 保守版 Prompt
+├── tests/
+│   ├── test_modules.py
+│   ├── test_evaluator.py
+│   └── test_quality.py
+└── data/                        # 输出目录
+```
+
+---
+
+## 9. 系统依赖
+
+| 依赖 | 用途 |
+|------|------|
+| Python 3.11+ | 运行时 |
+| Playwright + Chromium | 浏览器爬虫 |
+| financial-sdk | 财务指标（ROE/ROIC/利润率） |
+| `FINANCIAL_SDK_DIR` 环境变量 | financial-sdk 路径（默认 `/root/code/financial-sdk`） |
+
+---
+
+## 10. OpenClaw Agent 指引
 
 ### 触发关键词
 
-当用户消息中包含以下模式时，自动触发分析：
-
 | 模式 | 示例 | 动作 |
 |------|------|------|
-| `分析 {symbol}` | "分析 TCOM"、"分析下00700" | 执行智能迭代分析 |
-| `雪球分析 {symbol}` | "雪球分析 PD"、"帮我看看雪球上腾讯" | 同上 |
-| `{symbol} 分析` | "TCOM 分析一下" | 同上 |
-| `{symbol} 雪球` | "00700 雪球" | 同上 |
+| `分析 {symbol}` | "分析 TCOM" | `cli.py analyze` |
+| `爬取 {symbol}` | "爬一下00700" | `cli.py crawl` |
 
-symbol 支持格式: `TCOM`, `PDD`, `00700`, `SH600519`, `SZ300760`
+symbol 格式：`TCOM`, `PDD`, `00700`, `SH600519`, `SZ300760`
 
 ### 调用方式
 
 ```bash
-# 推荐：智能迭代分析（多轮评估，质量更高）
-cd /root/code/xueqiu-analyzer-skill && python scripts/smart_crawler_v2.py {symbol}
-
-# 快速：全流程分析（单次爬取，速度更快）
-cd /root/code/xueqiu-analyzer-skill && python scripts/run_analysis.py {symbol}
-
-# 仅爬数据（不分析）
-cd /root/code/xueqiu-analyzer-skill && python scripts/stock_crawler_v2.py {symbol}
+cd /root/code/xueqiu-analyzer-skill && .venv/bin/python -m xueqiu_analyzer.cli analyze {symbol}
 ```
 
-### 前置条件检查
+### 注意事项
 
-执行分析前确认：
-
-- [ ] `config/xueqiu_cookies.json` 存在且未过期
-- [ ] `BAILIAN_API_KEY` 或 `DASHSCOPE_API_KEY` 环境变量已设置
-- [ ] `playwright` 和 `chromium` 已安装
-- [ ] 网络可访问 `xueqiu.com` 和 `dashscope.aliyuncs.com`
-
-### 典型使用场景
-
-**场景 1: 用户要求分析一只股票**
-
-```
-用户: "帮我分析下 TCOM"
-
-Agent 动作:
-1. 确认 symbol 格式: TCOM, 00700, PDD 等
-2. 执行: cd /root/code/xueqiu-analyzer-skill && python scripts/smart_crawler_v2.py TCOM
-3. 等待完成（可能需要 2-5 分钟，取决于爬取轮次）
-4. 读取生成的报告文件: data/reports/TCOM_smart_v2_report_*.md
-5. 提取核心摘要回复用户，附上完整报告路径
-```
-
-**场景 2: 快速了解某只股票的雪球舆论**
-
-```
-用户: "00700 最近雪球上都在讨论什么"
-
-Agent 动作:
-1. 执行爬虫: python scripts/stock_crawler_v2.py 00700
-2. 读取 data/reports/00700_crawl_result_*.json
-3. 从 discussions/ news 中提取热门主题
-4. 以摘要形式回复
-```
-
-**场景 3: 批量分析多只股票**
-
-```
-用户: "帮我分析 TCOM PDD 00700 这三只"
-
-Agent 动作:
-1. 识别 3 个 symbol
-2. 依次执行（注意爬虫浏览器需顺序执行，不能并发）
-3. 汇总 3 份报告的核心发现
-```
-
-### 执行注意事项
-
-1. **顺序执行**: `stock_crawler_v2.py` 使用 Playwright 浏览器，同一时间只能运行一个实例
-2. **超时预期**: 智能迭代分析最长可能需要 5 分钟（10 轮 × 30s 爬虫等待 + LLM 调用）
-3. **cookies 过期**: 若分析失败并提示登录，需执行 `python scripts/login_xueqiu.py` 刷新
-4. **报告路径**: 分析完成后用 `data/reports/{symbol}_smart_v2_report_*` 找到最新报告
-5. **不要重复分析**: 如果用户刚刚分析过同一只股票，直接引用已有报告，不要重新执行
-
-### 错误处理
-
-| 错误 | 原因 | 解决 |
-|------|------|------|
-| `LLMError: 未配置 API Key` | 环境变量缺失 | 提示设置 `BAILIAN_API_KEY` |
-| `登录失败` | cookies 过期 | 执行 `login_xueqiu.py` |
-| `Playwright: Executable doesn't exist` | Chromium 未安装 | 执行 `playwright install chromium` |
-| 爬取数据为空 | 股票代码错误 | 确认 symbol 格式，A 股用 `SH/SZ` 前缀 |
+- Playwright 同一时间只能跑一个实例
+- 全流程分析约 5-8 分钟（含 LLM 调用）
+- cookies 过期时执行 `cli.py cookies` 刷新
 
 ---
 
-## 10. 项目文件清单
+## 11. 已知限制
 
-```
-xueqiu-analyzer-skill/
-├── SKILL.md                       # Skill 元数据 + 触发规则
-├── README.md                      # 本文档（架构 + 使用指南）
-├── PROJECT_LOG.md                 # 项目跟踪日志（ADR / Bug / 技术债务）
-├── CODE_REVIEW.md                 # 最近一次代码审查记录
-├── requirements.txt               # Python 依赖
-├── config/
-│   ├── config.yaml                # 主配置文件
-│   ├── target_users.yaml          # 飞书通知目标用户
-│   ├── xueqiu_credentials.yaml    # 雪球登录凭据
-│   └── xueqiu_cookies.json        # 登录 cookies（自动生成）
-├── scripts/
-│   ├── smart_crawler_v2.py        # ⭐ 智能迭代爬取主程序
-│   ├── stock_crawler_v2.py        # Playwright 爬虫核心
-│   ├── llm_client.py              # 统一 LLM 客户端
-│   ├── report_generator.py        # 报告生成器
-│   ├── report_template.py         # 报告 Markdown 模板
-│   ├── financial_fetcher.py       # 财务数据获取
-│   ├── data_quality_checker.py    # 数据质量检查
-│   ├── run_analysis.py            # V1 全流程入口
-│   ├── analyzer.py                # 独立分析器（V1 兼容）
-│   ├── config.py                  # 配置管理
-│   ├── login_xueqiu.py            # 雪球登录脚本（CLI 独立运行）
-│   ├── debug_news_notices.py      # 调试工具（CLI 独立运行）
-│   ├── get_username.py            # 用户信息查询（CLI 独立运行）
-│   ├── refresh_cookies.py         # Cookies 刷新（CLI 独立运行）
-│   ├── llm_config.py              # LLM 配置加载器（⚠️ 未被引用，待集成）
-│   └── update_template.py         # 模板更新工具（CLI 独立运行）
-└── data/
-    └── reports/                   # 分析报告输出目录
-```
+1. **时间停止**：热门股票当天可达 400+ 条，触及 `--max-pages` 兜底
+2. **专栏误判**：少量「回复」型内容可能被错归 articles（<5%，已通过字数+前缀过滤）
+3. **评论区**：详情页选择器可能因页面改版失效
+4. **公告**：仅取第一页，旧公告不抓
+5. **多年 ROIC**：financial-sdk 暂未集成
+6. **DOM 脆弱**：严重依赖雪球页面结构
+
+---
 
 ## 版本历史
 
 | 版本 | 日期 | 核心变更 |
 |------|------|----------|
+| v3.1.0 | 2026-05-26 | 时间维度停止、四分类分离、JS 结构化提取、评论爬取、专栏详情富化 |
+| v3.0.0 | 2026-05-24 | 模块化重构、financial-sdk 替代 AkShare、Layer 1 硬指标 |
+| v2.2.1 | 2026-05-24 | 代码审查修复 |
+| v2.0.0 | 2026-03-06 | Playwright + 双 Prompt + 智能迭代 |
 | v1.0.0 | 2026-03-05 | 基础爬虫 + GLM-5 分析 |
-| v2.0.0 | 2026-03-06 | Playwright + 双 Prompt + 财务数据 |
-| v2.1.0 | 2026-03-07 | 10 轮迭代 + 评分终止 + Token 统计 |
-| v2.2.0 | 2026-03-08 | 多年 ROIC + 财务加分项 |
-| v2.2.1 | 2026-05-24 | 代码审查修复：LLM 统一、废弃代码清理、异常链保留 |
 
 ## License
 

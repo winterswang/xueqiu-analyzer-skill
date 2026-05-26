@@ -302,10 +302,11 @@ class XueqiuCrawler:
                 for disc in result.discussions:
                     if disc.link and re.match(r'https://xueqiu\.com/\d+/\d+', disc.link):
                         detail_links.append(('disc', disc, disc.link))
-                if len(detail_links) < max_articles:
-                    for n in result.news:
-                        if n.link and re.match(r'https://xueqiu\.com/\d+/\d+', n.link):
-                            detail_links.append(('news', n, n.link))
+                for n in result.news:
+                    if len(detail_links) >= max_articles:
+                        break
+                    if n.link and re.match(r'https://xueqiu\.com/\d+/\d+', n.link):
+                        detail_links.append(('news', n, n.link))
 
                 seen = set()
                 enriched_disc = 0

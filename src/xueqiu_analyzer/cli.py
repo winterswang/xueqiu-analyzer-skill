@@ -79,9 +79,10 @@ def analyze(symbol, max_rounds, data, template):
 @cli.command()
 @click.argument('symbol')
 @click.option('--output', '-o', default=None, help='输出文件路径')
-@click.option('--max-pages', default=5, help='最大翻页数')
-@click.option('--max-articles', default=10, help='最大文章数')
-def crawl(symbol, output, max_pages, max_articles):
+@click.option('--max-pages', default=10, help='最大翻页数')
+@click.option('--max-articles', default=20, help='最大文章数')
+@click.option('--timeout', default=1200, help='超时时间(秒)')
+def crawl(symbol, output, max_pages, max_articles, timeout):
     """只爬取数据，保存为 JSON"""
     try:
         from xueqiu_analyzer.crawler import XueqiuCrawler
@@ -111,9 +112,9 @@ def crawl(symbol, output, max_pages, max_articles):
 
     click.echo("✅ 爬取完成:")
     click.echo(f"  讨论: {len(result.discussions)}")
+    click.echo(f"  专栏: {len(result.articles)}")
     click.echo(f"  资讯: {len(result.news)}")
     click.echo(f"  公告: {len(result.notices)}")
-    click.echo(f"  文章: {len(result.articles)}")
     click.echo(f"  保存: {out_path}")
 
 
