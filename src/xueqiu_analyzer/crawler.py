@@ -218,16 +218,25 @@ class XueqiuCrawler:
                 self.logger.info(f"获取 {len(result.notices)} 条公告")
 
                 # ========== 爬取公告正文（PDF） ==========
-                if max_notices > 0 and fitz:
+                if max_notices > 0:
                     self.logger.info(f"爬取 {min(max_notices, len(result.notices))} 条公告正文...")
+                    success_count = 0
+                    fail_count = 0
                     for i, nt in enumerate(result.notices[:max_notices]):
-                        if nt.link and nt.link.endswith('.pdf'):
+                        if nt.link and (nt.link.endswith('.pdf') or 'stockmc.xueqiu.com' in nt.link):
                             text = self._crawl_notice_pdf_text(nt.link)
-                            if text:
+                            if text and len(text) > 50:
                                 nt.content = text
+                                success_count += 1
+                                self.logger.info(f"  ✅ [{i+1}/{min(max_notices, len(result.notices))}] {len(text)}字: {nt.title[:40]}")
+                            else:
+                                fail_count += 1
+                                self.logger.warning(f"  ❌ [{i+1}/{min(max_notices, len(result.notices))}] 提取失败: {nt.title[:40]}")
+                        else:
+                            self.logger.debug(f"  ⊘ 非PDF跳过: {nt.link}")
                         if i < len(result.notices) - 1:
                             self.human_delay(1.0, 2.0)
-                    self.logger.info(f"公告正文爬取完成")
+                    self.logger.info(f"公告正文爬取完成: {success_count}成功/{fail_count}失败")
 
                 # ========== 爬取文章 ==========
                 self.logger.info(f"\n爬取 {max_articles} 篇文章详情...")
@@ -661,6 +670,10 @@ class XueqiuCrawler:
                     link = link_match.group(1) if link_match else ''
                     created = item.get('created_at', 0)
                     ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d') if created else ''
+                    # 过滤空标题（SEC文件等description无有效标题时跳过）
+                    if not title.strip():
+                        self.logger.debug(f"跳过空标题公告: description={desc[:80]}")
+                        continue
                     notices.append(Notice(
                         title=title[:300],
                         link=link,
@@ -899,43 +912,74 @@ class XueqiuCrawler:
                 pass
             return None
 
-    def _crawl_notice_pdf_text(self, url: str) -> Optional[str]:
-        """下载雪球公告 PDF 并提取正文文本
 
-        使用 pymupdf (fitz) 解析 PDF。
-        """
-        if not fitz:
-            self.logger.warning("pymupdf 未安装，无法解析 PDF 公告")
-            return None
-        try:
-            import urllib.request
+    def _crawl_notice_pdf_text(self, url: str) -> Optional[str]:
+            """下载雪球公告 PDF 并提取正文文本
+    
+            优先用 pymupdf(fitz)，若提取文字 <200 字则尝试 pdfplumber 回退。
+            """
+            import urllib.request, io
+    
             # 下载 PDF
-            req = urllib.request.Request(
-                url,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-                    'Referer': 'https://xueqiu.com/',
-                }
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                pdf_data = resp.read()
-            # 用 fitz 提取文本
-            doc = fitz.open(stream=pdf_data, filetype='pdf')
-            texts = []
-            for page in doc:
-                text = page.get_text()
-                if text.strip():
-                    texts.append(text.strip())
-            doc.close()
-            full_text = '\\n'.join(texts)
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                        'Referer': 'https://xueqiu.com/',
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    pdf_data = resp.read()
+            except Exception as e:
+                self.logger.warning(f"公告 PDF 下载失败 {url}: {e}")
+                return None
+    
+            full_text = None
+    
+            # Method 1: fitz
+            if fitz:
+                try:
+                    doc = fitz.open(stream=pdf_data, filetype='pdf')
+                    texts = []
+                    for page in doc:
+                        text = page.get_text()
+                        if text.strip():
+                            texts.append(text.strip())
+                    doc.close()
+                    full_text = '\n'.join(texts)
+                    self.logger.debug(f"fitz 提取: {len(full_text)} 字")
+                    if len(full_text) < 200:
+                        self.logger.debug(f"  fitz 提取过短({len(full_text)}字)，尝试 pdfplumber")
+                        full_text = None  # trigger fallback
+                except Exception as e:
+                    self.logger.debug(f"fitz 解析异常: {e}")
+                    full_text = None
+    
+            # Method 2: pdfplumber fallback
+            if not full_text:
+                try:
+                    import pdfplumber
+                    with pdfplumber.open(io.BytesIO(pdf_data)) as pdf:
+                        texts = []
+                        for page in pdf.pages:
+                            t = page.extract_text()
+                            if t and t.strip():
+                                texts.append(t.strip())
+                    full_text = '\n'.join(texts)
+                    self.logger.debug(f"pdfplumber 提取: {len(full_text)} 字")
+                except ImportError:
+                    self.logger.debug("pdfplumber 未安装")
+                except Exception as e:
+                    self.logger.debug(f"pdfplumber 解析异常: {e}")
+    
+            if not full_text or not full_text.strip():
+                return None
+    
             # 截断超长内容
             if len(full_text) > 8000:
-                full_text = full_text[:8000] + '\\n[...PDF正文已截断...]'
-            return full_text if full_text.strip() else None
-        except Exception as e:
-            self.logger.warning(f"公告 PDF 解析失败 {url}: {e}")
-            return None
-
+                full_text = full_text[:8000] + '\n[...PDF正文已截断...]'
+            return full_text
     def _crawl_article_detail(self, page: Page, url: str) -> Optional[Article]:
         """爬取雪球文章详情
 
