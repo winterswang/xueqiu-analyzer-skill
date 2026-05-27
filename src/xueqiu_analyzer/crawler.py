@@ -520,6 +520,7 @@ class XueqiuCrawler:
                 'Accept': 'application/json, text/plain, */*'
             }
 
+            should_stop = False
             for page_num in range(1, max_pages + 1):
                 url = (f'https://xueqiu.com/query/v1/symbol/search/status.json'
                        f'?count={per_page}&comment=0&symbol={symbol}'
@@ -548,7 +549,7 @@ class XueqiuCrawler:
                     # 时间过滤：遇到超出范围的帖子，停止爬取
                     if days > 0 and created > 0 and created / 1000 < time_cutoff:
                         self.logger.info(f"  [时间过滤] 第 {page_num} 页遇到 {days} 天前的帖子，停止")
-                        page_num = max_pages + 1  # 跳出外层循环
+                        should_stop = True
                         break
 
                     if content and len(content) > 5:
@@ -663,7 +664,11 @@ class XueqiuCrawler:
                 'Referer': f'https://xueqiu.com/S/{symbol}',
                 'Accept': 'application/json, text/plain, */*'
             }
+            should_stop = False
+            time_cutoff = datetime.now().timestamp() - days * 86400 if days > 0 else 0
             for page_num in range(1, max_pages + 1):
+                if should_stop:
+                    break
                 # 港股symbol_id用纯数字(00700)，A股用SH/SZ前缀，其他直接用symbol
                 symbol_id_map = {'HK00700': '00700'}
                 symbol_id = symbol_id_map.get(symbol, symbol)
@@ -689,12 +694,19 @@ class XueqiuCrawler:
                     if not title.strip():
                         self.logger.debug(f"跳过空标题公告: description={desc[:80]}")
                         continue
+                    # 时间过滤：遇到超出范围的公告，停止爬取
+                    if days > 0 and created > 0 and created / 1000 < time_cutoff:
+                        self.logger.info(f"  公告 API 页 {page_num} 遇到 {days} 天前的公告，停止")
+                        should_stop = True
+                        break
                     notices.append(Notice(
                         title=title[:300],
                         link=link,
                         time=ts,
                     ))
                 self.logger.info(f"  公告 API 页 {page_num}: {len(items)} 条 (累计 {len(notices)} 条)")
+                if should_stop:
+                    break
                 if len(items) < 10:
                     break
                 self.human_delay(0.5, 1.5)
