@@ -91,7 +91,8 @@ class XueqiuCrawler:
         self.extractor = ScrapingExtractor()
 
     def crawl(self, symbol: str, max_pages: int = 5,
-              max_articles: int = 10) -> CrawlResult:
+              max_articles: int = 10,
+              days: int = 0) -> CrawlResult:
         """
         爬取股票详情页数据
 
@@ -99,6 +100,7 @@ class XueqiuCrawler:
             symbol: 股票代码
             max_pages: 最大分页数
             max_articles: 最大文章数
+            days: 时间过滤（0=不限，N=只看最近 N 天）
 
         Returns:
             CrawlResult
@@ -168,7 +170,7 @@ class XueqiuCrawler:
                 # ========== 爬取讨论 ==========
                 self.logger.info("=== 爬取讨论 (API) ===")
                 api_discs = self._crawl_discussions_via_api(
-                    symbol, max_pages=max_pages, per_page=50)
+                    symbol, max_pages=max_pages, per_page=50, days=days)
                 for disc in api_discs:
                     if disc.is_column and disc.link:
                         result.articles.append(Article(
@@ -434,13 +436,24 @@ class XueqiuCrawler:
         return False
 
     def _crawl_discussions_via_api(self, symbol: str, max_pages: int = 10,
-                                    per_page: int = 50) -> List[Discussion]:
+                                    per_page: int = 50,
+                                    days: int = 0) -> List[Discussion]:
         """通过雪球官方 API 爬取讨论（支持真正的分页翻页）。
 
         API: GET https://xueqiu.com/query/v1/symbol/search/status.json
         params: symbol, count, page, type=11 (讨论), sort=time, source=all
+
+        Args:
+            symbol: 股票代码
+            max_pages: 最大分页数
+            per_page: 每页条数（API 固定返回 20 条）
+            days: 时间过滤（0=不限，N=只看最近 N 天）
         """
         discussions = []
+        time_cutoff = 0
+        if days > 0:
+            time_cutoff = datetime.now().timestamp() - days * 86400
+
         try:
             cookies_path = Path(self.cookies_path)
             if not cookies_path.exists():
@@ -480,9 +493,7 @@ class XueqiuCrawler:
                     if not isinstance(user, dict):
                         continue
                     screen_name = user.get('screen_name', '')
-                    source = item.get('source', '')
                     raw_content = item.get('description', '') or ''
-                    # 去掉 HTML 标签
                     content = re.sub(r'<[^>]+>', '', raw_content).strip()
                     status_id = item.get('id', '')
                     user_id = user.get('id', '')
@@ -490,6 +501,12 @@ class XueqiuCrawler:
                     ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d %H:%M') if created else ''
                     link = f'https://xueqiu.com/{user_id}/{status_id}'
                     is_col = str(item.get('type', '')) == '2'
+
+                    # 时间过滤：遇到超出范围的帖子，停止爬取
+                    if days > 0 and created > 0 and created / 1000 < time_cutoff:
+                        self.logger.info(f"  [时间过滤] 第 {page_num} 页遇到 {days} 天前的帖子，停止")
+                        page_num = max_pages + 1  # 跳出外层循环
+                        break
 
                     if content and len(content) > 5:
                         discussions.append(Discussion(
@@ -510,7 +527,6 @@ class XueqiuCrawler:
 
         except Exception as e:
             self.logger.warning(f"API 爬取讨论失败: {e}")
-
         return discussions
 
     def _crawl_news_via_api(self, symbol: str, max_count: int = 20) -> List[News]:
