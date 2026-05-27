@@ -17,7 +17,7 @@ from xueqiu_analyzer.models import CrawlResult
 from xueqiu_analyzer.evaluator import Evaluator
 from xueqiu_analyzer.analyzer import Analyzer
 from xueqiu_analyzer.orchestrator import Orchestrator
-from xueqiu_analyzer.stock_analyzer import StockAnalyzer
+from xueqiu_analyzer.stock_analyzer import DeepAnalyzer as StockAnalyzer
 
 
 def _setup_logging(verbose: bool = False):
