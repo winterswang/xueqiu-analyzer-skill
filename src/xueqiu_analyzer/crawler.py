@@ -137,7 +137,7 @@ class XueqiuCrawler:
                 # 2. 访问股票详情页
                 url = _xueqiu_url_for_symbol(symbol)
                 self.logger.info(f"访问股票详情页: {url}")
-                page.goto(url, timeout=self.timeout)
+                page.goto(url, timeout=max(self.timeout, 60000))
                 self.human_delay(3, 6)
 
                 self._close_modal(page)
@@ -599,7 +599,7 @@ class XueqiuCrawler:
             for item in interviews:
                 title = item.get('title', '')
                 raw_url = item.get('url', '')
-                link = raw_url if raw_url.startswith('http') else f'https://xueqiu.com{raw_url}'
+                link = raw_url.replace('http://', 'https://') if raw_url.startswith('http') else f'https://xueqiu.com{raw_url}'
                 created = item.get('createdAt', 0)
                 ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d %H:%M') if created else ''
                 content = item.get('content', '') or ''

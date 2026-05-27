@@ -277,53 +277,127 @@ class DeepAnalyzer:
     def _analyze_groups(self, raw_data: dict, symbol: str) -> List[dict]:
         """分组调用 LLM，分析所有数据"""
         group_results = []
+        t0_total = datetime.now()
+
+        # ── 数据流日志 ────────────────────────────────────────────
+        meta = raw_data['meta']
+        logger.info(f"[{symbol}] ═══════════════════════════════════════════")
+        logger.info(f"[{symbol}] 📊 数据规模汇总")
+        logger.info(f"[{symbol}]   讨论: {meta['total_discussions']} 条")
+        logger.info(f"[{symbol}]   专栏: {meta['total_columns']} 篇")
+        logger.info(f"[{symbol}]   资讯: {meta['total_news']} 条")
+        logger.info(f"[{symbol}]   公告: {meta['total_notices']} 条")
+        logger.info(f"[{symbol}] ═══════════════════════════════════════════")
+
+        # 估算总 token 量
+        est_chars = (
+            meta['total_discussions'] * 500 +
+            meta['total_columns'] * 2000 +
+            meta['total_news'] * 1000 +
+            meta['total_notices'] * 2000
+        )
+        est_tokens = est_chars // 4
+        logger.info(f"[{symbol}] 🔢 估算总字符: ~{est_chars:,} chars | ~{est_tokens:,} tokens")
+        logger.info(f"[{symbol}] 📦 分组策略")
+        logger.info(f"[{symbol}]   讨论: {DISC_CHUNK_SIZE}条/组 → {len(self._chunk_list(raw_data['discussions'], DISC_CHUNK_SIZE))} 组")
+        logger.info(f"[{symbol}]   专栏: {COL_CHUNK_SIZE}篇/组 → {len(self._chunk_list(raw_data['columns'], COL_CHUNK_SIZE))} 组")
+        logger.info(f"[{symbol}]   资讯: 全量 1 组")
+        logger.info(f"[{symbol}]   公告: 全量 1 组")
+        logger.info(f"[{symbol}] ═══════════════════════════════════════════")
 
         # 1. 讨论分组
         disc_groups = self._chunk_list(raw_data['discussions'], DISC_CHUNK_SIZE)
-        logger.info(f"[{symbol}] 讨论分 {len(disc_groups)} 组，每组 ~{DISC_CHUNK_SIZE} 条")
+        logger.info(f"[{symbol}] ┌─ 讨论: {len(disc_groups)} 组")
         for i, group in enumerate(disc_groups):
+            t_group = datetime.now()
             data_block = self._serialize_chunk(group, max_content_len=600)
+            chars_in = len(data_block)
+            tokens_est = chars_in // 4
             group_label = f"讨论组{i+1}/{len(disc_groups)}"
+            logger.info(f"[{symbol}] │ ├─ {group_label} [{len(group)}条] input≈{tokens_est:,}tokens")
             result = self._call_llm_group(
                 data_block, group, '讨论', i + 1, len(disc_groups),
                 len(raw_data['discussions'])
             )
+            t_elapsed = (datetime.now() - t_group).total_seconds()
+            if 'error' in result:
+                logger.error(f"[{symbol}] │ └─ {group_label} ❌ ERROR: {result['error']}")
+            else:
+                hvi = len(result.get('high_value_items', []))
+                themes = result.get('key_themes', [])
+                logger.info(f"[{symbol}] │ └─ {group_label} ✅ ({t_elapsed:.1f}s) hvi={hvi} themes={themes}")
             group_results.append({'label': group_label, 'type': 'discussions', 'data': result})
-            logger.info(f"[{symbol}] {group_label} 完成")
 
         # 2. 专栏分组
         col_groups = self._chunk_list(raw_data['columns'], COL_CHUNK_SIZE)
         if col_groups:
-            logger.info(f"[{symbol}] 专栏分 {len(col_groups)} 组，每组 ~{COL_CHUNK_SIZE} 篇")
+            logger.info(f"[{symbol}] ┌─ 专栏: {len(col_groups)} 组")
             for i, group in enumerate(col_groups):
+                t_group = datetime.now()
                 data_block = self._serialize_chunk(group, max_content_len=2000)
+                chars_in = len(data_block)
+                tokens_est = chars_in // 4
                 group_label = f"专栏组{i+1}/{len(col_groups)}"
+                logger.info(f"[{symbol}] │ ├─ {group_label} [{len(group)}篇] input≈{tokens_est:,}tokens")
                 result = self._call_llm_group(
                     data_block, group, '专栏文章', i + 1, len(col_groups),
                     len(raw_data['columns'])
                 )
+                t_elapsed = (datetime.now() - t_group).total_seconds()
+                if 'error' in result:
+                    logger.error(f"[{symbol}] │ └─ {group_label} ❌ ERROR: {result['error']}")
+                else:
+                    hvi = len(result.get('high_value_items', []))
+                    themes = result.get('key_themes', [])
+                    logger.info(f"[{symbol}] │ └─ {group_label} ✅ ({t_elapsed:.1f}s) hvi={hvi} themes={themes}")
                 group_results.append({'label': group_label, 'type': 'columns', 'data': result})
-                logger.info(f"[{symbol}] {group_label} 完成")
+        else:
+            logger.info(f"[{symbol}] ┌─ 专栏: 0 篇（跳过）")
 
-        # 3. 新闻（全部一组，API 只返回标题，内容少）
+        # 3. 新闻
         if raw_data['news']:
+            t_group = datetime.now()
             group = raw_data['news']
-            data_block = self._serialize_chunk(group, max_content_len=300)
-            result = self._call_llm_group(
-                data_block, group, '资讯', 1, 1, len(raw_data['news'])
-            )
+            data_block = self._serialize_chunk(group, max_content_len=1000)
+            chars_in = len(data_block)
+            tokens_est = chars_in // 4
+            logger.info(f"[{symbol}] ┌─ 资讯: 1组 [{len(group)}条] input≈{tokens_est:,}tokens")
+            result = self._call_llm_group(data_block, group, '资讯', 1, 1, len(raw_data['news']))
+            t_elapsed = (datetime.now() - t_group).total_seconds()
+            if 'error' in result:
+                logger.error(f"[{symbol}] │ └─ 资讯组1/1 ❌ ERROR: {result['error']}")
+            else:
+                hvi = len(result.get('high_value_items', []))
+                themes = result.get('key_themes', [])
+                logger.info(f"[{symbol}] │ └─ 资讯组1/1 ✅ ({t_elapsed:.1f}s) hvi={hvi} themes={themes}")
             group_results.append({'label': '资讯组1/1', 'type': 'news', 'data': result})
-            logger.info(f"[{symbol}] 资讯组完成")
+        else:
+            logger.info(f"[{symbol}] ┌─ 资讯: 0条（跳过）")
 
-        # 4. 公告（全部一组）
+        # 4. 公告
         if raw_data['notices']:
+            t_group = datetime.now()
             group = raw_data['notices']
-            data_block = self._serialize_chunk(group, max_content_len=500)
-            result = self._call_llm_group(
-                data_block, group, '公告', 1, 1, len(raw_data['notices'])
-            )
+            data_block = self._serialize_chunk(group, max_content_len=2000)
+            chars_in = len(data_block)
+            tokens_est = chars_in // 4
+            logger.info(f"[{symbol}] ┌─ 公告: 1组 [{len(group)}条] input≈{tokens_est:,}tokens")
+            result = self._call_llm_group(data_block, group, '公告', 1, 1, len(raw_data['notices']))
+            t_elapsed = (datetime.now() - t_group).total_seconds()
+            if 'error' in result:
+                logger.error(f"[{symbol}] │ └─ 公告组1/1 ❌ ERROR: {result['error']}")
+            else:
+                hvi = len(result.get('high_value_items', []))
+                themes = result.get('key_themes', [])
+                logger.info(f"[{symbol}] │ └─ 公告组1/1 ✅ ({t_elapsed:.1f}s) hvi={hvi} themes={themes}")
             group_results.append({'label': '公告组1/1', 'type': 'notices', 'data': result})
-            logger.info(f"[{symbol}] 公告组完成")
+        else:
+            logger.info(f"[{symbol}] ┌─ 公告: 0条（跳过）")
+
+        t_total = (datetime.now() - t0_total).total_seconds()
+        success_groups = sum(1 for g in group_results if 'error' not in g.get('data', {}))
+        logger.info(f"[{symbol}] ═══════════════════════════════════════════")
+        logger.info(f"[{symbol}] ✅ 分组分析完成: {success_groups}/{len(group_results)} 组成功 ({t_total:.0f}s)")
 
         return group_results
 
@@ -351,16 +425,21 @@ class DeepAnalyzer:
 
         try:
             messages = [{"role": "user", "content": prompt}]
+            logger.debug(f"[LLM] prompt_len={len(prompt):,}chars, max_tokens={LLM_MAX_TOKENS}")
             result_text = self.llm.chat(messages, max_tokens=LLM_MAX_TOKENS)
             result_text = result_text.strip()
             if result_text.startswith('```'):
                 lines = result_text.split('\n')
                 result_text = '\n'.join(lines[1:] if lines[0].startswith('```') else lines)
                 result_text = result_text.rstrip('```')
-            return json.loads(result_text)
+            resp_len = len(result_text)
+            logger.debug(f"[LLM] response_len={resp_len:,}chars")
+            parsed = json.loads(result_text)
+            return parsed
         except json.JSONDecodeError as e:
-            logger.warning(f"LLM 返回非 JSON（第{group_idx}组）: {e}")
-            return {'error': str(e), 'raw': result_text[:500]}
+            logger.warning(f"[LLM] ❌ JSON解析失败（第{group_idx}组）: {e}")
+            logger.warning(f"[LLM] raw_response[:200]: {result_text[:200]}")
+            return {'error': f'JSON解析失败: {e}', 'raw': result_text[:500]}
 
     def _synthesize(self, group_results: List[dict], symbol: str,
                     raw_data: dict) -> dict:
@@ -383,16 +462,19 @@ class DeepAnalyzer:
         )
 
         try:
+            prompt_len = len(prompt)
             messages = [{"role": "user", "content": prompt}]
+            logger.info(f"[{symbol}] 🔄 合成阶段: 合并 {len(group_results)} 组, prompt={prompt_len:,}chars")
             result_text = self.llm.chat(messages, max_tokens=LLM_MAX_TOKENS)
             result_text = result_text.strip()
             if result_text.startswith('```'):
                 lines = result_text.split('\n')
                 result_text = '\n'.join(lines[1:] if lines[0].startswith('```') else lines)
                 result_text = result_text.rstrip('```')
+            logger.info(f"[{symbol}] 🔄 合成响应: {len(result_text):,}chars")
             return json.loads(result_text)
         except json.JSONDecodeError as e:
-            logger.warning(f"[{symbol}] 合成 LLM 返回非 JSON: {e}")
+            logger.warning(f"[{symbol}] ❌ 合成失败: {e}")
             return {
                 'error': f'合成失败: {e}',
                 'raw': result_text[:500],
