@@ -685,15 +685,16 @@ class XueqiuCrawler:
                     break
                 for item in items:
                     desc = item.get('description', '') or ''
-                    # 提取标题：去掉 <a...> 后的链接部分
-                    title = re.sub(r'<a[^>]+>.*</a>', '', desc).strip()
+                    # 提取标题：去掉 <a> 标签，非贪婪匹配避免吞掉整段文字
+                    title = re.sub(r'<a[^>]+>.*?</a>', '', desc).strip()
+                    title = title.replace('$拼多多(PDD)$', '').replace('$', '').strip()
                     # 提取链接
                     link_match = re.search(r'href="(https?://[^"]+)"', desc)
                     link = link_match.group(1) if link_match else ''
                     created = item.get('created_at', 0)
                     ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d') if created else ''
-                    # 过滤空标题（SEC文件等description无有效标题时跳过）
-                    if not title.strip():
+                    # 过滤空标题（标题文本少于5字时跳过）
+                    if not title.strip() or len(title.strip()) < 5:
                         self.logger.debug(f"跳过空标题公告: description={desc[:80]}")
                         continue
                     # 时间过滤：遇到超出范围的公告，停止爬取
