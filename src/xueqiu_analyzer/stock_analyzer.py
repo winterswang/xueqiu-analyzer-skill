@@ -23,6 +23,89 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STORAGE_DIR = Path('~/.xueqiu_stocks').expanduser()
 
+# ─── LLM 输出格式标准化 ─────────────────────────────────────────
+def _norm_confidence(v):
+    if not isinstance(v, str): return "中"
+    v = v.strip()
+    if v in ("高", "high"): return "高"
+    if v in ("低", "low"): return "低"
+    return "中"
+
+def _norm_bull_bear_balance(v):
+    if not isinstance(v, str): return "均势"
+    v = v.strip()
+    if v in ("多方主导", "多方", "多头主导"): return "多方主导"
+    if v in ("空方主导", "空方", "空头主导"): return "空方主导"
+    return "均势"
+
+def _norm_sentiment(v):
+    if not isinstance(v, str): return "中性"
+    v = v.strip()
+    if v in ("看多", "多头", "正面"): return "看多"
+    if v in ("看空", "空头", "负面"): return "看空"
+    if v in ("分化", "分歧", "均势"): return "分化"
+    return "中性"
+
+def _norm_source_indices(indices):
+    import re
+    result = []
+    if isinstance(indices, str): indices = [indices]
+    for idx in indices:
+        if isinstance(idx, int):
+            result.append(idx)
+        elif isinstance(idx, str):
+            nums = re.findall(r'\d+', idx)
+            result.extend([int(n) for n in nums])
+        elif isinstance(idx, dict) and 'index' in idx:
+            result.append(int(idx['index']))
+    return sorted(set(result))
+
+def _post_normalize_chunk(r):
+    if 'summary' in r: r['summary'] = str(r['summary'])[:80]
+    if 'signal_strength' in r: r['signal_strength'] = str(r.get('signal_strength', '中'))
+    if 'overall_sentiment' in r: r['overall_sentiment'] = _norm_sentiment(r.get('overall_sentiment', ''))
+    if 'cross_item_agreement' in r: r['cross_item_agreement'] = str(r.get('cross_item_agreement', '无明确信号'))
+    for item in r.get('high_value_items', []):
+        if 'sentiment' in item: item['sentiment'] = _norm_sentiment(item['sentiment'])
+        if 'value_level' in item:
+            item['value_level'] = "高" if item['value_level'] in ("高", "high") else "低" if item['value_level'] in ("低", "low") else "中"
+    return r
+
+def _post_normalize_synth(r):
+    if 'summary' in r: r['summary'] = str(r['summary'])[:120]
+    for pt in r.get('bull_points', []):
+        if isinstance(pt, dict):
+            pt['confidence'] = _norm_confidence(pt.get('confidence', '中'))
+            pt['point'] = str(pt.get('point', ''))[:100]
+            pt['source_indices'] = _norm_source_indices(pt.get('source_indices', []))
+        else:
+            r['bull_points'][r['bull_points'].index(pt)] = {
+                'point': str(pt)[:100], 'confidence': '中', 'source_indices': []
+            }
+    for pt in r.get('bear_points', []):
+        if isinstance(pt, dict):
+            pt['confidence'] = _norm_confidence(pt.get('confidence', '中'))
+            pt['point'] = str(pt.get('point', ''))[:100]
+            pt['source_indices'] = _norm_source_indices(pt.get('source_indices', []))
+        else:
+            r['bear_points'][r['bear_points'].index(pt)] = {
+                'point': str(pt)[:100], 'confidence': '中', 'source_indices': []
+            }
+    for topic in r.get('topics', []):
+        topic['bull_bear_balance'] = _norm_bull_bear_balance(topic.get('bull_bear_balance', '均势'))
+        topic['sentiment'] = _norm_sentiment(topic.get('sentiment', '中性'))
+        if 'mentions' in topic:
+            try: topic['mentions'] = int(topic['mentions'])
+            except: topic['mentions'] = 0
+    for d in r.get('high_value_discussions', []):
+        d['sentiment'] = _norm_sentiment(d.get('sentiment', '中性'))
+    for n in r.get('key_notices', []):
+        r_v = str(n.get('relevance', '中')).strip()
+        n['relevance'] = "高" if r_v in ("高", "high") else "低" if r_v in ("低", "low") else "中"
+    return r
+
+
+
 # 估算：讨论 50 条 × 500 字 ≈ 25k chars ≈ 8-12k tokens
 # 专栏 5 篇 × 2000 字 ≈ 10k chars ≈ 4-5k tokens
 DISC_CHUNK_SIZE = 50
