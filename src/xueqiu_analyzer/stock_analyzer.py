@@ -33,48 +33,60 @@ NOTICE_CHUNK_SIZE = 10
 # 每次 LLM 调用 max_tokens
 LLM_MAX_TOKENS = 16000
 
-_ANALYZE_CHUNK_PROMPT = """你是一位专业、严谨的价值投资研究助手。
+_ANALYZE_CHUNK_PROMPT = """你是一位专业、严谨的价值投资研究助手，专注于雪球舆情分析。
 
-请分析以下雪球舆情数据，输出结构化 JSON。每条原文有 index 字段（从1开始），请在输出中引用有价值的条目。
+请分析以下雪球舆情数据，输出结构化 JSON。每条原文有 index 和 time 字段。
 
 【数据来源类型】：{data_type}
 【本组数据范围】：共 {total_items} 条中的第 {start_idx}-{end_idx} 条
 
-【输出格式】（严格输出 JSON，不要任何其他内容）：
+━━━ 分析维度 ━━━━━━━━━━━━━━━━━━━━━━━
+1. 识别具体事实 vs 主观感受（具体事实更有价值）
+2. 关注含数据/数字的具体观点（股价、PE、增速、回购额等）
+3. 识别主流与非主流观点（非主流但有逻辑的观点同样重要）
+4. 区分"即时情绪反应"和"有依据的判断"
+5. 注意时间信号：近期发帖权重略高
+
+━━━ 输出格式 ━━━━━━━━━━━━━━━━━━━━━━━
+严格输出 JSON，不要任何其他内容：
 {{
-  "summary": "本组数据核心观点（30字以内）",
+  "summary": "本组核心观点（30字以内，归纳性描述）",
+  "signal_strength": "强/中/弱（强=有数据支撑的判断，中=逻辑推理，弱=情绪表达）",
+  "overall_sentiment": "看多/中性/看空/分化",
   "high_value_items": [
     {{
       "index": N,
       "author": "作者",
-      "content": "内容摘要（80字以内）",
-      "sentiment": "正面/中性/负面",
+      "content": "原文摘要（80字以内，保留关键词和数字）",
+      "sentiment": "看多/中性/看空",
+      "signal_type": "数据型/逻辑型/情绪型/消息型",
       "value_level": "高/中/低",
-      "reason": "为什么这条有价值（10字以内）"
+      "specific_claims": ["具体主张或数据（如：股价<1000、PE<20、回购10亿）"],
+      "reason": "为什么这条有价值（15字以内）"
     }}
   ],
-  "key_themes": ["主题词1", "主题词2"],
-  "sentiment": "整体情绪：正面/中性/负面/分化",
-  "bull_points": ["看多点（从原文提炼）"],
-  "bear_points": ["看空点（从原文提炼）"],
-  "notable_mentions": ["值得注意的具体事实或数据"]
+  "key_themes": ["主题词A", "主题词B"],
+  "bull_points": ["从原文提炼的看多具体依据"],
+  "bear_points": ["从原文提炼的看空具体依据"],
+  "cross_item_agreement": "统一/分歧/无明确信号（各条目观点是否一致）"
 }}
 
-【index 引用规则】
-- index 是在下方【原文数据】中分配的序号
-- high_value_items 中必须包含真正有价值的条目 index
-- 没用到的 index 不要写
+━━━ index 引用规则 ━━━━━━━━━━━━━━━━━
+- index 是下方【原文数据】中的序号
+- 只引用真正有价值的 index，不必覆盖所有条目
+- 无价值的条目（纯情绪发泄、无实质内容）应忽略
 
-【原文数据】
+━━━ 原文数据 ━━━━━━━━━━━━━━━━━━━━━━━
 {data_block}
 
 请严格输出 JSON，不要输出任何其他内容。"""
 
 
-_ANALYZE_SYNTHESIZE_PROMPT = """你是一位专业、严谨的价值投资研究助手。
+_ANALYZE_SYNTHESIZE_PROMPT = """你是一位专业、严谨的价值投资研究助手，专注于雪球舆情分析。
 
 以下是同一只股票的多组舆情分析结果，请将其合成为一份完整的结构化投资报告。
 
+━━━ 输入信息 ━━━━━━━━━━━━━━━━━━━━━━━━━
 【股票】：{symbol}
 【分析组数】：{num_groups} 组
 
@@ -84,17 +96,23 @@ _ANALYZE_SYNTHESIZE_PROMPT = """你是一位专业、严谨的价值投资研究
 【各组详细内容】
 {group_details}
 
-【输出格式】（严格输出 JSON，不要任何其他内容）：
+━━━ 输出格式 ━━━━━━━━━━━━━━━━━━━━━━━
+严格输出 JSON，不要任何其他内容：
 {{
-  "summary": "股票舆情核心摘要（50字以内）",
-  "bull_points": ["看多点1", "看多点2", "看多点3"],
-  "bear_points": ["风险点1", "风险点2"],
+  "summary": "股票舆情核心摘要（60字以内）",
+  "bull_points": [
+    {{"point": "看多点", "source_indices": ["index列表"], "confidence": "高/中/低"}}
+  ],
+  "bear_points": [
+    {{"point": "风险点", "source_indices": ["index列表"], "confidence": "高/中/低"}}
+  ],
   "topics": [
     {{
       "name": "话题名",
-      "mentions": 提及次数估算,
-      "sentiment": "正面/中性/负面",
-      "key_views": ["核心观点1", "核心观点2"]
+      "mentions": 提及次数（估算）,
+      "sentiment": "看多/中性/看空/分化",
+      "key_views": ["核心观点1（附index）", "核心观点2（附index）"],
+      "bull_bear_balance": "多方主导/空方主导/均势"
     }}
   ],
   "high_value_columns": [
@@ -102,15 +120,17 @@ _ANALYZE_SYNTHESIZE_PROMPT = """你是一位专业、严谨的价值投资研究
       "index": "原文index",
       "author": "作者",
       "title": "标题",
-      "key_points": "核心要点（100字以内）"
+      "key_points": "核心要点（100字以内）",
+      "investment_ thesis": "看多/看空/中性"
     }}
   ],
   "high_value_discussions": [
     {{
       "index": "原文index",
       "author": "作者",
-      "content": "内容摘要（80字以内）",
-      "sentiment": "正面/中性/负面"
+      "content": "内容摘要（60字以内）",
+      "sentiment": "看多/中性/看空",
+      "signal_type": "数据型/逻辑型/情绪型/消息型"
     }}
   ],
   "key_notices": [
@@ -118,12 +138,25 @@ _ANALYZE_SYNTHESIZE_PROMPT = """你是一位专业、严谨的价值投资研究
       "index": "原文index",
       "title": "公告标题",
       "time": "日期",
-      "key_info": "关键信息（50字以内）"
+      "key_info": "关键信息（60字以内）",
+      "relevance": "高/中/低（对投资决策的影响程度）"
     }}
   ],
-  "actionable_insights": ["可执行洞见1", "可执行洞见2"],
-  "concerns": ["需进一步确认的风险1"]
+  "actionable_insights": [
+    {{"insight": "具体可执行洞见", "basis": "依据（附index）"}}
+  ],
+  "concerns": [
+    {{"concern": "需进一步确认的风险", "reason": "为什么不能直接相信"}}
+  ],
+  "data_gaps": ["哪些信息不足需要补充"]
 }}
+
+━━━ 质量要求 ━━━━━━━━━━━━━━━━━━━━━━━
+- bull_points / bear_points 必须有 source_indices（指向原文index）
+- topics 必须有 bull_bear_balance（多方/空方/均势）
+- concerns 要有 reason（为什么需要警惕）
+- 所有重要结论需可溯源到具体 index
+- 注意识别：各组之间的矛盾观点、分歧结论
 
 请严格输出 JSON，不要输出任何其他内容。"""
 
@@ -210,6 +243,7 @@ class DeepAnalyzer:
                 'time': disc.time,
                 'link': disc.link,
                 'is_column': disc.is_column,
+                '_time': disc.time,  # 带发布时间方便引用
             })
             idx += 1
 

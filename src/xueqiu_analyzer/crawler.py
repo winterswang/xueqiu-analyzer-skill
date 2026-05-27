@@ -196,7 +196,7 @@ class XueqiuCrawler:
 
                 # ========== 爬取资讯 ==========
                 self.logger.info("=== 爬取资讯 (API) ===")
-                result.news = self._crawl_news_via_api(symbol, max_count=30)
+                result.news = self._crawl_news_via_api(symbol, max_count=30, days=days)
                 self.logger.info(f"获取 {len(result.news)} 条资讯")
 
                 # ========== 爬取资讯详情（正文） ==========
@@ -214,7 +214,7 @@ class XueqiuCrawler:
 
                 # ========== 爬取公告 ==========
                 self.logger.info("=== 爬取公告 (API) ===")
-                result.notices = self._crawl_notices_via_api(symbol, max_pages=max_pages)
+                result.notices = self._crawl_notices_via_api(symbol, max_pages=max_pages, days=days)
                 self.logger.info(f"获取 {len(result.notices)} 条公告")
 
                 # ========== 爬取公告正文（PDF） ==========
@@ -572,7 +572,7 @@ class XueqiuCrawler:
             self.logger.warning(f"API 爬取讨论失败: {e}")
         return discussions
 
-    def _crawl_news_via_api(self, symbol: str, max_count: int = 20) -> List[News]:
+    def _crawl_news_via_api(self, symbol: str, max_count: int = 30, days: int = 0) -> List[News]:
         """通过雪球官方 API 爬取资讯（新闻/文章）。
 
         API: GET https://xueqiu.com/statuses/interview/search.json
@@ -599,17 +599,29 @@ class XueqiuCrawler:
                 'Referer': f'https://xueqiu.com/S/{symbol}',
                 'Accept': 'application/json, text/plain, */*'
             }
-            url = f'https://xueqiu.com/statuses/interview/search.json?symbol={symbol}&count={max_count}'
+            # 港股news API也用纯数字
+            symbol_id_map = {'HK00700': '00700'}
+            news_symbol = symbol_id_map.get(symbol, symbol)
+            url = f'https://xueqiu.com/statuses/interview/search.json?symbol={news_symbol}&count={max_count}'
             resp = requests.get(url, headers=headers, timeout=15)
             if resp.status_code != 200:
                 self.logger.warning(f"资讯 API 返回 {resp.status_code}")
                 return []
             interviews = resp.json().get('interviews', [])
-            for item in interviews:
+            # 按时间排序（最新优先）并应用 days 过滤
+            interviews_sorted = sorted(interviews, key=lambda x: x.get('createdAt', 0), reverse=True)
+            time_cutoff = 0
+            if days > 0:
+                time_cutoff = datetime.now().timestamp() - days * 86400
+
+            for item in interviews_sorted:
+                created = item.get('createdAt', 0)
+                # 时间过滤
+                if days > 0 and created > 0 and created / 1000 < time_cutoff:
+                    break  # 已排序，遇到超出范围的直接停止
                 title = item.get('title', '')
                 raw_url = item.get('url', '')
                 link = raw_url.replace('http://', 'https://') if raw_url.startswith('http') else f'https://xueqiu.com{raw_url}'
-                created = item.get('createdAt', 0)
                 ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d %H:%M') if created else ''
                 content = item.get('content', '') or ''
                 news_list.append(News(
@@ -624,7 +636,7 @@ class XueqiuCrawler:
             self.logger.warning(f"API 爬取资讯失败: {e}")
         return news_list
 
-    def _crawl_notices_via_api(self, symbol: str, max_pages: int = 10) -> List[Notice]:
+    def _crawl_notices_via_api(self, symbol: str, max_pages: int = 10, days: int = 0) -> List[Notice]:
         """通过雪球官方 API 爬取公告。
 
         API: GET https://xueqiu.com/statuses/stock_timeline.json
@@ -652,8 +664,11 @@ class XueqiuCrawler:
                 'Accept': 'application/json, text/plain, */*'
             }
             for page_num in range(1, max_pages + 1):
+                # 港股symbol_id用纯数字(00700)，A股用SH/SZ前缀，其他直接用symbol
+                symbol_id_map = {'HK00700': '00700'}
+                symbol_id = symbol_id_map.get(symbol, symbol)
                 url = (f'https://xueqiu.com/statuses/stock_timeline.json'
-                       f'?symbol_id={symbol}&count=10&source=%E5%85%AC%E5%91%8A&page={page_num}')
+                       f'?symbol_id={symbol_id}&count=10&source=%E5%85%AC%E5%91%8A&page={page_num}')
                 resp = requests.get(url, headers=headers, timeout=15)
                 if resp.status_code != 200:
                     break
