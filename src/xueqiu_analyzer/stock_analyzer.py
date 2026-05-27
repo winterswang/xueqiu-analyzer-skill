@@ -693,7 +693,16 @@ class DeepAnalyzer:
         if analysis.get('concerns'):
             lines += ["## 九、需进一步确认的风险", ""]
             for c in analysis['concerns']:
-                lines.append(f"- {c}")
+                if isinstance(c, dict):
+                    concern_text = c.get('concern', str(c))
+                    reason_text = c.get('reason', '')
+                    if reason_text:
+                        lines.append(f"- {concern_text}")
+                        lines.append(f"  → 原因：{reason_text}")
+                    else:
+                        lines.append(f"- {concern_text}")
+                else:
+                    lines.append(f"- {c}")
             lines += ["", "---", ""]
 
         lines += ["## 附录：原文索引", "", "点击 index 可在本地 raw.json 中找到对应原文", ""]
