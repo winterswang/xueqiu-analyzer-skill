@@ -145,14 +145,28 @@ _ANALYZE_CHUNK_PROMPT = """你是一位专业、严谨的价值投资研究助�
       "signal_type": "数据型/逻辑型/情绪型/消息型",
       "value_level": "高/中/低",
       "specific_claims": ["具体主张或数据（如：股价<1000、PE<20、回购10亿）"],
-      "reason": "为什么这条有价值（15字以内）"
+      "why_valuable": "这条内容的核心价值说明（20-40字，说明数据来源和推断逻辑）"
     }}
   ],
-  "key_themes": ["主题词A", "主题词B"],
-  "bull_points": ["从原文提炼的看多具体依据"],
-  "bear_points": ["从原文提炼的看空具体依据"],
-  "cross_item_agreement": "统一/分歧/无明确信号（各条目观点是否一致）"
+  "group_topics": [
+    {{
+      "name": "话题名",
+      "mentions_estimate": 本组内提及次数（估算整数）,
+      "sentiment": "看多/中性/看空/分化",
+      "bull_bear_balance": "多方主导/空方主导/均势"
+    }}
+  ],
+  "bull_points": ["从原文提炼的看多具体依据（必须对应具体index）"],
+  "bear_points": ["从原文提炼的看空具体依据（必须对应具体index）"],
+  "cross_item_agreement": "统一/分歧/无明确信号（各条目观点是否一致）",
+  "intra_group_conflicts": ["组内存在的重大观点矛盾（如有，否则写无）"]
 }}
+
+━━━ 负面约束（绝对禁止） ━━━━━━━━━━━━━━━━━━━
+1. 禁止将多个 index 的内容合并成一条 high_value_items
+2. 禁止在 specific_claims 中放入主观判断或无法溯源的主张
+3. 禁止在 bull_points / bear_points 中写入与原文不符的内容
+4. high_value_items 数量建议 3-8 条，不要把所有条目都放进去
 
 ━━━ index 引用规则 ━━━━━━━━━━━━━━━━━
 - index 是下方【原文数据】中的序号
@@ -162,12 +176,16 @@ _ANALYZE_CHUNK_PROMPT = """你是一位专业、严谨的价值投资研究助�
 ━━━ 原文数据 ━━━━━━━━━━━━━━━━━━━━━━━
 {data_block}
 
-请严格输出 JSON，不要输出任何其他内容。"""
-
+请严格输出 JSON，不要输出任何任何内容。"""
 
 _ANALYZE_SYNTHESIZE_PROMPT = """你是一位专业、严谨的价值投资研究助手，专注于雪球舆情分析。
 
 以下是同一只股票的多组舆情分析结果，请将其合成为一份完整的结构化投资报告。
+
+━━━ 概念区分（重要） ━━━━━━━━━━━━━━━━━━━━━━━
+- bear_points：雪球舆论中已确认的看空论点（来自原文，有 source_indices 溯源）
+- concerns：LLM 推断的认知不确定性——即这条信息哪里不可靠、需要核实什么
+  （与 bear_points 独立，不重复；关注的是"信度"而非"空方"）
 
 ━━━ 输入信息 ━━━━━━━━━━━━━━━━━━━━━━━━━
 【股票】：{symbol}
@@ -179,20 +197,26 @@ _ANALYZE_SYNTHESIZE_PROMPT = """你是一位专业、严谨的价值投资研究
 【各组详细内容】
 {group_details}
 
+━━━ 跨组矛盾处理 ━━━━━━━━━━━━━━━━━━━━━━━━━
+如果不同组分块结论存在重大矛盾（例如：一组说"AI进展强劲"，另一组说"AI无实质进展"），必须：
+1. 在对应 topic 下同时呈现两种观点，不掩盖矛盾
+2. 用 bull_bear_balance: "均势" 标注该 topic
+3. 在 summary 中体现这种分歧，不强行统一
+
 ━━━ 输出格式 ━━━━━━━━━━━━━━━━━━━━━━━
 严格输出 JSON，不要任何其他内容：
 {{
-  "summary": "股票舆情核心摘要（60字以内）",
+  "summary": "股票舆情核心摘要（60字以内），必须体现多空分歧程度",
   "bull_points": [
-    {{"point": "看多点", "source_indices": ["index列表"], "confidence": "高/中/低"}}
+    {{"point": "看多点", "source_indices": [index列表（整数）], "confidence": "高/中/低"}}
   ],
   "bear_points": [
-    {{"point": "风险点", "source_indices": ["index列表"], "confidence": "高/中/低"}}
+    {{"point": "风险点", "source_indices": [index列表（整数）], "confidence": "高/中/低"}}
   ],
   "topics": [
     {{
       "name": "话题名",
-      "mentions": 提及次数（估算）,
+      "mentions": 提及次数（估算整数）,
       "sentiment": "看多/中性/看空/分化",
       "key_views": ["核心观点1（附index）", "核心观点2（附index）"],
       "bull_bear_balance": "多方主导/空方主导/均势"
@@ -200,16 +224,16 @@ _ANALYZE_SYNTHESIZE_PROMPT = """你是一位专业、严谨的价值投资研究
   ],
   "high_value_columns": [
     {{
-      "index": "原文index",
+      "index": 原文index（整数）,
       "author": "作者",
       "title": "标题",
       "key_points": "核心要点（100字以内）",
-      "investment_ thesis": "看多/看空/中性"
+      "investment_thesis": "看多/看空/中性"
     }}
   ],
   "high_value_discussions": [
     {{
-      "index": "原文index",
+      "index": 原文index（整数）,
       "author": "作者",
       "content": "内容摘要（60字以内）",
       "sentiment": "看多/中性/看空",
@@ -218,27 +242,31 @@ _ANALYZE_SYNTHESIZE_PROMPT = """你是一位专业、严谨的价值投资研究
   ],
   "key_notices": [
     {{
-      "index": "原文index",
+      "index": 原文index（整数）,
       "title": "公告标题",
       "time": "日期",
       "key_info": "关键信息（60字以内）",
-      "relevance": "高/中/低（对投资决策的影响程度）"
+      "relevance": "高/中/低"
     }}
   ],
   "actionable_insights": [
     {{"insight": "具体可执行洞见", "basis": "依据（附index）"}}
   ],
   "concerns": [
-    {{"concern": "需进一步确认的风险", "reason": "为什么不能直接相信"}}
+    {{
+      "concern": "认知不确定性描述（这条信息哪里不可靠/需要核实什么）",
+      "reason": "为什么不能直接相信（20-40字）",
+      "verification": "需要查证的具体信息（10-20字）"
+    }}
   ],
   "data_gaps": ["哪些信息不足需要补充"]
 }}
 
 ━━━ 质量要求 ━━━━━━━━━━━━━━━━━━━━━━━
-- bull_points / bear_points 必须有 source_indices（指向原文index）
+- bull_points / bear_points 必须有 source_indices（指向原文index，整数列表）
 - topics 必须有 bull_bear_balance（多方/空方/均势）
-- concerns 要有 reason（为什么需要警惕）
-- 所有重要结论需可溯源到具体 index
+- concerns 必须有 reason 和 verification（与 bear_points 独立，不重复）
+- 所有重要结论需可溯源到具体 index（整数）
 - 注意识别：各组之间的矛盾观点、分歧结论
 
 请严格输出 JSON，不要输出任何其他内容。"""
@@ -441,7 +469,7 @@ class DeepAnalyzer:
                 logger.error(f"[{symbol}] │ └─ {group_label} ❌ ERROR: {result['error']}")
             else:
                 hvi = len(result.get('high_value_items', []))
-                themes = result.get('key_themes', [])
+                themes = [t['name'] for t in result.get('group_topics', [])]
                 logger.info(f"[{symbol}] │ └─ {group_label} ✅ ({t_elapsed:.1f}s) hvi={hvi} themes={themes}")
             group_results.append({'label': group_label, 'type': 'discussions', 'data': result})
 
@@ -465,7 +493,7 @@ class DeepAnalyzer:
                     logger.error(f"[{symbol}] │ └─ {group_label} ❌ ERROR: {result['error']}")
                 else:
                     hvi = len(result.get('high_value_items', []))
-                    themes = result.get('key_themes', [])
+                    themes = result.get('group_topics', [])
                     logger.info(f"[{symbol}] │ └─ {group_label} ✅ ({t_elapsed:.1f}s) hvi={hvi} themes={themes}")
                 group_results.append({'label': group_label, 'type': 'columns', 'data': result})
         else:
@@ -485,7 +513,7 @@ class DeepAnalyzer:
                 logger.error(f"[{symbol}] │ └─ 资讯组1/1 ❌ ERROR: {result['error']}")
             else:
                 hvi = len(result.get('high_value_items', []))
-                themes = result.get('key_themes', [])
+                themes = [t['name'] for t in result.get('group_topics', [])]
                 logger.info(f"[{symbol}] │ └─ 资讯组1/1 ✅ ({t_elapsed:.1f}s) hvi={hvi} themes={themes}")
             group_results.append({'label': '资讯组1/1', 'type': 'news', 'data': result})
         else:
@@ -505,7 +533,7 @@ class DeepAnalyzer:
                 logger.error(f"[{symbol}] │ └─ 公告组1/1 ❌ ERROR: {result['error']}")
             else:
                 hvi = len(result.get('high_value_items', []))
-                themes = result.get('key_themes', [])
+                themes = [t['name'] for t in result.get('group_topics', [])]
                 logger.info(f"[{symbol}] │ └─ 公告组1/1 ✅ ({t_elapsed:.1f}s) hvi={hvi} themes={themes}")
             group_results.append({'label': '公告组1/1', 'type': 'notices', 'data': result})
         else:
