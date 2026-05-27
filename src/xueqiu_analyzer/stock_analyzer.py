@@ -142,7 +142,9 @@ class DeepAnalyzer:
     def analyze(self, symbol: str,
                 max_pages: int = 10,
                 days: int = 0,
-                max_articles: int = 10) -> dict:
+                max_articles: int = 10,
+                max_news: int = 10,
+                max_notices: int = 10) -> dict:
         """
         完整分析流程：爬取 → 本地存储 → 分组 LLM 分析 → 合成报告
         """
@@ -153,7 +155,8 @@ class DeepAnalyzer:
         # Phase 1: 爬取
         logger.info(f"[{symbol}] 开始爬取... max_pages={max_pages}, days={days}, max_articles={max_articles}")
         crawl_result = self.crawler.crawl(
-            symbol, max_pages=max_pages, max_articles=max_articles, days=days
+            symbol, max_pages=max_pages, max_articles=max_articles,
+            days=days, max_news=max_news, max_notices=max_notices
         )
 
         # Phase 2: 组装原文数据（带 index）

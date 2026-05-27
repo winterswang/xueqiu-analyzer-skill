@@ -24,6 +24,11 @@ try:
 except ImportError:
     raise ImportError("请安装 playwright: pip install playwright && playwright install chromium")
 
+try:
+    import fitz  # PyMuPDF for PDF text extraction
+except ImportError:
+    fitz = None
+
 from .models import (
     CrawlResult, Discussion, News, Notice, Article,
 )
@@ -92,7 +97,9 @@ class XueqiuCrawler:
 
     def crawl(self, symbol: str, max_pages: int = 5,
               max_articles: int = 10,
-              days: int = 0) -> CrawlResult:
+              days: int = 0,
+              max_news: int = 20,
+              max_notices: int = 20) -> CrawlResult:
         """
         爬取股票详情页数据
 
@@ -101,6 +108,8 @@ class XueqiuCrawler:
             max_pages: 最大分页数
             max_articles: 最大文章数
             days: 时间过滤（0=不限，N=只看最近 N 天）
+            max_news: 最大爬取新闻正文数（0=只爬标题）
+            max_notices: 最大爬取公告正文数（PDF解析）
 
         Returns:
             CrawlResult
@@ -190,10 +199,35 @@ class XueqiuCrawler:
                 result.news = self._crawl_news_via_api(symbol, max_count=30)
                 self.logger.info(f"获取 {len(result.news)} 条资讯")
 
+                # ========== 爬取资讯详情（正文） ==========
+                if max_news > 0:
+                    self.logger.info(f"爬取 {min(max_news, len(result.news))} 条资讯详情...")
+                    for i, n in enumerate(result.news[:max_news]):
+                        detail = self._crawl_news_detail(browser, n.link)
+                        if detail:
+                            n.content = detail.get('content', '') or n.content
+                            if detail.get('title'):
+                                n.title = detail['title']
+                        if i < len(result.news) - 1:
+                            self.human_delay(1.5, 3.0)
+                    self.logger.info(f"资讯详情爬取完成")
+
                 # ========== 爬取公告 ==========
                 self.logger.info("=== 爬取公告 (API) ===")
                 result.notices = self._crawl_notices_via_api(symbol, max_pages=max_pages)
                 self.logger.info(f"获取 {len(result.notices)} 条公告")
+
+                # ========== 爬取公告正文（PDF） ==========
+                if max_notices > 0 and fitz:
+                    self.logger.info(f"爬取 {min(max_notices, len(result.notices))} 条公告正文...")
+                    for i, nt in enumerate(result.notices[:max_notices]):
+                        if nt.link and nt.link.endswith('.pdf'):
+                            text = self._crawl_notice_pdf_text(nt.link)
+                            if text:
+                                nt.content = text
+                        if i < len(result.notices) - 1:
+                            self.human_delay(1.0, 2.0)
+                    self.logger.info(f"公告正文爬取完成")
 
                 # ========== 爬取文章 ==========
                 self.logger.info(f"\n爬取 {max_articles} 篇文章详情...")
@@ -814,6 +848,93 @@ class XueqiuCrawler:
         except Exception as e:
             self.logger.warning(f"解析公告失败: {e}")
         return notices
+
+    def _crawl_news_detail(self, browser, url: str) -> Optional[dict]:
+        """爬取新闻/资讯详情页正文
+
+        URL 格式: https://xueqiu.com/talks/item/{id}
+        与文章详情页结构相同，可复用 CSS selector 逻辑。
+        """
+        try:
+            page = browser.new_page()
+            page.goto(url, timeout=self.timeout)
+            self.human_delay(2, 4)
+            self._close_modal(page)
+
+            title = page.evaluate('''() => {
+                const el = document.querySelector('.article__bd__title, h1.title, .news-title');
+                return el ? el.innerText.trim() : document.title;
+            }''')
+            content = page.evaluate('''() => {
+                const selectors = [
+                    '.article__bd__detail',
+                    '.article-content',
+                    '.news-content',
+                    '[class*="article-detail"]',
+                    '[class*="detail_body"]',
+                    '.stock-news-content',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.innerText.trim().length > 20) {
+                        return el.innerText.trim();
+                    }
+                }
+                // fallback: 最长段落
+                const paras = document.querySelectorAll('p, div.article-text');
+                let best = '';
+                for (const p of paras) {
+                    const t = p.innerText.trim();
+                    if (t.length > best.length) best = t;
+                }
+                return best;
+            }''')
+            page.close()
+            return {'title': title, 'content': content} if content else None
+        except Exception as e:
+            self.logger.warning(f"资讯详情爬取失败 {url}: {e}")
+            try:
+                page.close()
+            except Exception:
+                pass
+            return None
+
+    def _crawl_notice_pdf_text(self, url: str) -> Optional[str]:
+        """下载雪球公告 PDF 并提取正文文本
+
+        使用 pymupdf (fitz) 解析 PDF。
+        """
+        if not fitz:
+            self.logger.warning("pymupdf 未安装，无法解析 PDF 公告")
+            return None
+        try:
+            import urllib.request
+            # 下载 PDF
+            req = urllib.request.Request(
+                url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                    'Referer': 'https://xueqiu.com/',
+                }
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                pdf_data = resp.read()
+            # 用 fitz 提取文本
+            doc = fitz.open(stream=pdf_data, filetype='pdf')
+            texts = []
+            for page in doc:
+                text = page.get_text()
+                if text.strip():
+                    texts.append(text.strip())
+            doc.close()
+            full_text = '\\n'.join(texts)
+            # 截断超长内容
+            if len(full_text) > 8000:
+                full_text = full_text[:8000] + '\\n[...PDF正文已截断...]'
+            return full_text if full_text.strip() else None
+        except Exception as e:
+            self.logger.warning(f"公告 PDF 解析失败 {url}: {e}")
+            return None
 
     def _crawl_article_detail(self, page: Page, url: str) -> Optional[Article]:
         """爬取雪球文章详情

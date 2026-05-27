@@ -176,8 +176,10 @@ def reanalyze(data, template):
 @click.option('--output-dir', '-o', default=None, help='输出目录（默认 ~/.xueqiu_stocks/{SYMBOL}/{timestamp}/）')
 @click.option('--max-pages', default=10, help='最大分页数（10页×20条=200条）')
 @click.option('--days', default=0, help='只看最近 N 天的数据（0=不限）')
-@click.option('--max-articles', default=0, help='最大文章详情数（0=不爬详情）')
-def deep_analyze(symbol, output_dir, max_pages, days, max_articles):
+@click.option('--max-articles', default=10, help='最大专栏文章详情数')
+@click.option('--max-news', default=10, help='最大新闻正文爬取数（0=只爬标题）')
+@click.option('--max-notices', default=10, help='最大公告正文爬取数（0=只爬标题）')
+def deep_analyze(symbol, output_dir, max_pages, days, max_articles, max_news, max_notices):
     """深度舆情分析：爬取 → 本地存储 → DeepSeek 分析 → Markdown 报告
 
     数据规模参考：
@@ -216,6 +218,8 @@ def deep_analyze(symbol, output_dir, max_pages, days, max_articles):
         max_pages=max_pages,
         days=days,
         max_articles=max_articles,
+        max_news=max_news,
+        max_notices=max_notices,
     )
     t1 = time.time()
 
