@@ -522,8 +522,10 @@ class XueqiuCrawler:
 
             should_stop = False
             for page_num in range(1, max_pages + 1):
+                symbol_id_map = {'HK00700': '00700', 'HK:00700': '00700'}
+                api_symbol = symbol_id_map.get(symbol, symbol)
                 url = (f'https://xueqiu.com/query/v1/symbol/search/status.json'
-                       f'?count={per_page}&comment=0&symbol={symbol}'
+                       f'?count={per_page}&comment=0&symbol={api_symbol}'
                        f'&hl=0&source=all&sort=time&page={page_num}&q=&type=11')
                 resp = requests.get(url, headers=headers, timeout=15)
                 if resp.status_code != 200:
