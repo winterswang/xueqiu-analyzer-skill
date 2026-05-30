@@ -572,10 +572,8 @@ class XueqiuCrawler:
 
             should_stop = False
             for page_num in range(1, max_pages + 1):
-                symbol_id_map = {'HK00700': '00700', 'HK:00700': '00700'}
-                api_symbol = symbol_id_map.get(symbol, symbol)
                 url = (f'https://xueqiu.com/query/v1/symbol/search/status.json'
-                       f'?count={per_page}&comment=0&symbol={api_symbol}'
+                       f'?count={per_page}&comment=0&symbol={symbol}'
                        f'&hl=0&source=all&sort=time&page={page_num}&q=&type=11')
                 resp = requests.get(url, headers=headers, timeout=15)
                 if resp.status_code != 200:
@@ -652,10 +650,7 @@ class XueqiuCrawler:
                 'Referer': f'https://xueqiu.com/S/{symbol}',
                 'Accept': 'application/json, text/plain, */*'
             }
-            # 港股news API也用纯数字
-            symbol_id_map = {'HK00700': '00700'}
-            news_symbol = symbol_id_map.get(symbol, symbol)
-            url = f'https://xueqiu.com/statuses/interview/search.json?symbol={news_symbol}&count={max_count}'
+            url = f'https://xueqiu.com/statuses/interview/search.json?symbol={symbol}&count={max_count}'
             resp = requests.get(url, headers=headers, timeout=15)
             if resp.status_code != 200:
                 self.logger.warning(f"资讯 API 返回 {resp.status_code}")
@@ -721,11 +716,8 @@ class XueqiuCrawler:
             for page_num in range(1, max_pages + 1):
                 if should_stop:
                     break
-                # 港股symbol_id用纯数字(00700)，A股用SH/SZ前缀，其他直接用symbol
-                symbol_id_map = {'HK00700': '00700'}
-                symbol_id = symbol_id_map.get(symbol, symbol)
                 url = (f'https://xueqiu.com/statuses/stock_timeline.json'
-                       f'?symbol_id={symbol_id}&count=10&source=%E5%85%AC%E5%91%8A&page={page_num}')
+                       f'?symbol_id={symbol}&count=10&source=%E5%85%AC%E5%91%8A&page={page_num}')
                 resp = requests.get(url, headers=headers, timeout=15)
                 if resp.status_code != 200:
                     break
@@ -752,10 +744,14 @@ class XueqiuCrawler:
                         self.logger.info(f"  公告 API 页 {page_num} 遇到 {days} 天前的公告，停止")
                         should_stop = True
                         break
+                    # 提取公告类型：[类型] 格式 → _detect_notice_type fallback
+                    type_match = re.search(r'\[(.+?)\]', title)
+                    nt_type = type_match.group(1) if type_match else _detect_notice_type(title)
                     notices.append(Notice(
                         title=title[:300],
                         link=link,
                         time=ts,
+                        notice_type=nt_type,
                     ))
                 self.logger.info(f"  公告 API 页 {page_num}: {len(items)} 条 (累计 {len(notices)} 条)")
                 if should_stop:
@@ -1298,3 +1294,34 @@ class XueqiuCrawler:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return CrawlResult.from_dict(data)
+
+
+# ── Notice type detection ────────────────────────────────────
+
+_NOTICE_TYPE_A = re.compile(
+    r'关于(.+?)(?:的|之)(公告|通知|决议|报告|议案|说明|提示|批复|意见)'
+)
+_NOTICE_TYPE_SEC = re.compile(
+    r'(?:Statement|Report)\s+(?:of|on)\s+(.+?)(?:\s+Accession|\s+Size|$)',
+    re.IGNORECASE
+)
+_NOTICE_TYPE_SEC_FORM = re.compile(
+    r'(Form\s+[\d\-A-Z]+)', re.IGNORECASE
+)
+
+
+def _detect_notice_type(title: str) -> str:
+    """Detect notice type from title when bracket format [type] is absent.
+
+    Covers A-share (\"关于...的公告\") and SEC filing (\"Statement of...\") formats.
+    """
+    m = _NOTICE_TYPE_A.search(title)
+    if m:
+        return f'{m.group(1).strip()}{m.group(2)}'[:60]
+    m = _NOTICE_TYPE_SEC.search(title)
+    if m:
+        return f'SEC: {m.group(1).strip()}'[:60]
+    m = _NOTICE_TYPE_SEC_FORM.search(title)
+    if m:
+        return m.group(1)[:60]
+    return ''
