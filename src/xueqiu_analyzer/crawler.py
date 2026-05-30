@@ -1235,6 +1235,21 @@ class XueqiuCrawler:
 _NOTICE_TYPE_A = re.compile(
     r'关于(.+?)(?:的|之)(公告|通知|决议|报告|议案|说明|提示|批复|意见)'
 )
+_NOTICE_TYPE_A2 = re.compile(
+    r'(?:贵州茅台：\s*)?(?:'
+    r'(独立董事提名人声明与承诺)|'
+    r'(独立董事候选人声明与承诺)(?:[（(].*?[)）])?|'
+    r'(第.+?次会议决议公告)|'
+    r'(主要经营数据公告)|'
+    r'(\d{4}年度审计报告)|'
+    r'(\d{4}年度内部.*?审计报告)|'
+    r'(\d{4}年度独立董事述职报告)(?:[（(].*?[)）])?|'
+    r'(\d{4}年第一季度报告)|'
+    r'(\d{4}年度财务报告)|'
+    r'(董事会工作报告)|'
+    r'(监事会工作报告)'
+    r')',
+)
 _NOTICE_TYPE_SEC = re.compile(
     r'(?:Statement|Report)\s+(?:of|on)\s+(.+?)(?:\s+Accession|\s+Size|$)',
     re.IGNORECASE
@@ -1252,6 +1267,13 @@ def _detect_notice_type(title: str) -> str:
     m = _NOTICE_TYPE_A.search(title)
     if m:
         return f'{m.group(1).strip()}{m.group(2)}'[:60]
+
+    # A-share fallback: titles without "关于" prefix
+    # e.g., "独立董事提名人声明与承诺" → "独立董事提名人声明"
+    m = _NOTICE_TYPE_A2.search(title)
+    if m:
+        return f'{m.group(1).strip()}'[:60]
+
     m = _NOTICE_TYPE_SEC.search(title)
     if m:
         return f'SEC: {m.group(1).strip()}'[:60]

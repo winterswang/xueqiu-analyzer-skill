@@ -80,6 +80,41 @@ EXTRACT_USER_PROMPT = """## 待提取的网页 HTML 内容
 """
 
 
+# ── JSON 截断修复 ──────────────────────────────────────────────────────────
+
+def _repair_truncated_json(s: str) -> str:
+    """Attempt to repair a truncated JSON string by closing open braces/quotes."""
+    if not s:
+        return s
+    s = s.rstrip()
+    # Count unbalanced braces
+    open_braces = s.count('{') - s.count('}')
+    open_brackets = s.count('[') - s.count(']')
+    # Close trailing quote if inside a string value
+    in_string = False
+    escape = False
+    for c in s:
+        if escape:
+            escape = False
+            continue
+        if c == '\\':
+            escape = True
+        elif c == '"':
+            in_string = not in_string
+    if in_string:
+        s += '"'
+    # Close braces
+    if open_braces > 0 or open_brackets > 0:
+        # Try to find the last incomplete value and trim it
+        last_comma = s.rfind(',')
+        last_colon = s.rfind(':')
+        if last_colon > last_comma and last_colon > 0:
+            # Remove incomplete value (text after last colon that isn't a quote or number)
+            s = s[:last_colon] + ': ""'
+        s += ']' * max(0, open_brackets) + '}' * max(0, open_braces)
+    return s
+
+
 # ── DeepSeek API 调用 ────────────────────────────────────────────────────────
 
 def call_deepseek_extract(html_content: str, url: str) -> ArticleContent:
@@ -117,7 +152,15 @@ def call_deepseek_extract(html_content: str, url: str) -> ArticleContent:
                 lines = json_str.split("\n")
                 json_str = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
-            data = json.loads(json_str)
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                # JSON truncated — try to repair by completing braces
+                repaired = _repair_truncated_json(json_str)
+                if repaired:
+                    data = json.loads(repaired)
+                else:
+                    raise
             return ArticleContent(
                 title=str(data.get("title", "")),
                 author=str(data.get("author", "")),
