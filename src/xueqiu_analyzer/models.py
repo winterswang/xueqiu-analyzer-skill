@@ -16,10 +16,8 @@ class Discussion:
     content: str
     time: str
     link: str = ""
+    is_column: bool = False  # 是否专栏文章
     comments: List[str] = field(default_factory=list)
-    comment_count: int = 0
-    forward_count: int = 0
-    like_count: int = 0
 
 
 @dataclass
@@ -52,9 +50,7 @@ class Article:
     time: str
     link: str = ""
     article_id: str = ""
-    comments: List[str] = field(default_factory=list)
-    comment_count: int = 0
-    like_count: int = 0
+    is_column: bool = True  # 专栏文章标记
 
 
 @dataclass
