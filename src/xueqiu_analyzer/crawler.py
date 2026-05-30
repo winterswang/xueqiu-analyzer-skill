@@ -192,12 +192,48 @@ class XueqiuCrawler:
                         ))
                     else:
                         result.discussions.append(disc)
-                self.logger.info(f"获取 {len(result.discussions)} 条讨论（含 {sum(1 for d in result.discussions if d.is_column)} 专栏）")
+                self.logger.info(f"API 获取 {len(result.discussions)} 条讨论（含 {sum(1 for d in result.discussions if d.is_column)} 专栏）")
+
+                # ── DOM Fallback: API 数据不足时用 Playwright 补充 ──
+                if len(api_discs) < 3:
+                    self.logger.info("⚠️ API 讨论不足 3 条，退到 DOM 翻页")
+                    if self._switch_tab(page, '讨论'):
+                        self.human_delay(1, 2)
+                        self._crawl_items_with_pagination(
+                            page, self._parse_single_discussion,
+                            result.discussions, max_pages=max_pages, target_count=5000)
+                    # DOM 路径专栏分离: 【专栏 前缀匹配
+                    true_discs = []
+                    for d in result.discussions:
+                        content = (d.content or '').strip()
+                        if content.startswith('【专栏') and '专栏' in content[:30]:
+                            end = content.find('】')
+                            body = content[end+1:].lstrip('\n').strip() if end > 0 else ''
+                            is_reply = body.startswith('回复') or body.startswith('//@') or len(body) < 80
+                            if not is_reply:
+                                result.articles.append(Article(
+                                    title=content[1:end].strip() if end > 0 else content[:50],
+                                    author=d.author, content=body[:5000],
+                                    time=d.time, link=d.link, is_column=True,
+                                ))
+                                continue
+                        true_discs.append(d)
+                    result.discussions = true_discs
+                    self.logger.info(f"DOM 补充: {len(result.discussions)} 讨论, {len(result.articles)} 专栏")
 
                 # ========== 爬取资讯 ==========
                 self.logger.info("=== 爬取资讯 (API) ===")
                 result.news = self._crawl_news_via_api(symbol, max_count=30, days=days)
-                self.logger.info(f"获取 {len(result.news)} 条资讯")
+                self.logger.info(f"API 获取 {len(result.news)} 条资讯")
+
+                # ── DOM Fallback ──
+                if len(result.news) < 3:
+                    self.logger.info("⚠️ API 资讯不足 3 条，退到 DOM 翻页")
+                    if self._switch_tab(page, '资讯'):
+                        self._crawl_items_with_pagination(
+                            page, self._parse_single_news,
+                            result.news, max_pages=max_pages, target_count=5000)
+                    self.logger.info(f"DOM 补充: {len(result.news)} 条资讯")
 
                 # ========== 爬取资讯详情（正文） ==========
                 if max_news > 0:
@@ -210,12 +246,26 @@ class XueqiuCrawler:
                                 n.title = detail['title']
                         if i < len(result.news) - 1:
                             self.human_delay(1.5, 3.0)
-                    self.logger.info(f"资讯详情爬取完成")
+                    self.logger.info("资讯详情爬取完成")
 
                 # ========== 爬取公告 ==========
                 self.logger.info("=== 爬取公告 (API) ===")
                 result.notices = self._crawl_notices_via_api(symbol, max_pages=max_pages, days=days)
-                self.logger.info(f"获取 {len(result.notices)} 条公告")
+                self.logger.info(f"API 获取 {len(result.notices)} 条公告")
+
+                # ── DOM Fallback ──
+                if len(result.notices) < 3:
+                    self.logger.info("⚠️ API 公告不足 3 条，退到 DOM")
+                    if self._switch_tab(page, '公告'):
+                        items = page.query_selector_all('.timeline__item')
+                        for item in items[:20]:
+                            try:
+                                nt = self._parse_single_notice(item)
+                                if nt:
+                                    result.notices.append(nt)
+                            except Exception:
+                                pass
+                    self.logger.info(f"DOM 补充: {len(result.notices)} 条公告")
 
                 # ========== 爬取公告正文（PDF） ==========
                 if max_notices > 0:
@@ -1149,6 +1199,89 @@ class XueqiuCrawler:
             except Exception:
                 pass
         return None
+
+    # ========== DOM Fallback 方法（API 失败时使用） ==========
+
+    def _crawl_items_with_pagination(self, page, parse_fn, result_list,
+                                       max_pages=100, target_count=1000):
+        """Navigate pages, parse items, accumulate into result_list.
+
+        Time-aware stop: when items start showing yesterday's date patterns.
+        """
+        seen_content = set()
+        stale_pages = 0
+
+        for page_num in range(1, max_pages + 1):
+            try:
+                page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                self.human_delay(0.5, 1)
+
+                items = page.query_selector_all('.timeline__item')
+                parsed = 0
+
+                for item in items:
+                    try:
+                        obj = parse_fn(item)
+                        if obj:
+                            sig = (getattr(obj, 'content', '') or getattr(obj, 'title', ''))[:50]
+                            if sig and sig not in seen_content:
+                                seen_content.add(sig)
+                                result_list.append(obj)
+                                parsed += 1
+                    except Exception:
+                        pass
+
+                self.logger.info(f"[DOM] 分页 [{page_num}] 本页: {parsed}, 累计: {len(result_list)}")
+
+                if len(result_list) >= target_count:
+                    break
+                if parsed == 0:
+                    stale_pages += 1
+                else:
+                    stale_pages = 0
+                if stale_pages >= 3:
+                    break
+
+                clicked = page.evaluate('''() => {
+                    const all = document.querySelectorAll('a, button, div, span');
+                    for (const btn of all) {
+                        if ((btn.innerText || '').trim() === '下一页') {
+                            btn.click(); return true;
+                        }
+                    }
+                    return false;
+                }''')
+                if clicked:
+                    self.human_delay(1.5, 3)
+                else:
+                    break
+            except Exception:
+                pass
+
+    def _parse_single_notice(self, item) -> Optional[Notice]:
+        """Parse notice from DOM element (API fallback)."""
+        try:
+            text = item.inner_text().strip()
+            if not text:
+                return None
+            link = ''
+            for a in (item.query_selector_all('a') or []):
+                href = a.get_attribute('href') or ''
+                if href and not href.startswith('javascript'):
+                    link = 'https://xueqiu.com' + href if href.startswith('/') else href
+                    break
+            clean_title = re.sub(r'[\ue000-\uf8ff\u2000-\u206f]', '', text).strip()[:200]
+            notice = Notice(title=clean_title, link=link)
+            time_match = re.search(
+                r'(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天|\d{2}:\d{2}|\d{4}-\d{2}-\d{2})',
+                clean_title)
+            if time_match:
+                notice.time = time_match.group(1)
+            type_match = re.search(r'\[(.+?)\]', clean_title)
+            notice.notice_type = type_match.group(1) if type_match else ''
+            return notice
+        except Exception:
+            return None
 
     # ========== 序列化 ==========
 
