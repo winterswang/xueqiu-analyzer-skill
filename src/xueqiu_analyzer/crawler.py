@@ -222,32 +222,13 @@ class XueqiuCrawler:
                     self.logger.info(f"DOM 补充: {len(result.discussions)} 讨论, {len(result.articles)} 专栏")
 
                 # ========== 爬取资讯 ==========
-                self.logger.info("=== 爬取资讯 (API) ===")
-                result.news = self._crawl_news_via_api(symbol, max_count=30, days=days)
-                self.logger.info(f"API 获取 {len(result.news)} 条资讯")
-
-                # ── DOM Fallback: 数量不足 OR 数据太旧 ──
-                need_dom = len(result.news) < 3
-                if not need_dom and result.news:
-                    newest = max(
-                        (n.time for n in result.news if n.time and len(n.time) >= 10),
-                        default='')
-                    if newest:
-                        try:
-                            newest_dt = datetime.strptime(newest[:10], '%Y-%m-%d')
-                            if (datetime.now() - newest_dt).days > 30:
-                                self.logger.info(f"⚠️ 资讯最新 {newest[:10]} 已超过 30 天，数据过期")
-                                need_dom = True
-                        except ValueError:
-                            pass
-                if need_dom:
-                    if not len(result.news) < 3:
-                        self.logger.info("⚠️ 资讯数据过期，退到 DOM 翻页")
-                    if self._switch_tab(page, '资讯'):
-                        self._crawl_items_with_pagination(
-                            page, self._parse_single_news,
-                            result.news, max_pages=max_pages, target_count=5000)
-                    self.logger.info(f"DOM 补充: {len(result.news)} 条资讯")
+                self.logger.info("=== 爬取资讯 (Playwright DOM) ===")
+                # interview/search.json 是雪球访谈接口，非实时新闻，直接走 DOM
+                if self._switch_tab(page, '资讯'):
+                    self._crawl_items_with_pagination(
+                        page, self._parse_single_news,
+                        result.news, max_pages=max_pages, target_count=5000)
+                self.logger.info(f"获取 {len(result.news)} 条资讯")
 
                 # ========== 爬取资讯详情（正文） ==========
                 if max_news > 0:
@@ -636,67 +617,6 @@ class XueqiuCrawler:
         except Exception as e:
             self.logger.warning(f"API 爬取讨论失败: {e}")
         return discussions
-
-    def _crawl_news_via_api(self, symbol: str, max_count: int = 30, days: int = 0) -> List[News]:
-        """通过雪球官方 API 爬取资讯（新闻/文章）。
-
-        API: GET https://xueqiu.com/statuses/interview/search.json
-        params: symbol, count
-        """
-        news_list = []
-        try:
-            cookies_path = Path(self.cookies_path)
-            if not cookies_path.exists():
-                cookies_path = Path(__file__).parent.parent.parent / 'config' / 'cookies' / 'xueqiu.json'
-            if cookies_path.exists():
-                with open(cookies_path) as f:
-                    cookies = json.load(f)
-            else:
-                self.logger.warning("未找到 cookies，跳过资讯爬取")
-                return []
-            token = next((c['value'] for c in cookies if c['name'] == 'xq_a_token'), None)
-            if not token:
-                self.logger.warning("未找到 xq_a_token，跳过资讯爬取")
-                return []
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-                'Cookie': f'xq_a_token={token}',
-                'Referer': f'https://xueqiu.com/S/{symbol}',
-                'Accept': 'application/json, text/plain, */*'
-            }
-            url = f'https://xueqiu.com/statuses/interview/search.json?symbol={symbol}&count={max_count}'
-            resp = requests.get(url, headers=headers, timeout=15)
-            if resp.status_code != 200:
-                self.logger.warning(f"资讯 API 返回 {resp.status_code}")
-                return []
-            interviews = resp.json().get('interviews', [])
-            # 按时间排序（最新优先）并应用 days 过滤
-            interviews_sorted = sorted(interviews, key=lambda x: x.get('createdAt', 0), reverse=True)
-            time_cutoff = 0
-            if days > 0:
-                time_cutoff = datetime.now().timestamp() - days * 86400
-
-            for item in interviews_sorted:
-                created = item.get('createdAt', 0)
-                # 时间过滤
-                if days > 0 and created > 0 and created / 1000 < time_cutoff:
-                    break  # 已排序，遇到超出范围的直接停止
-                title = item.get('title', '')
-                raw_url = item.get('url', '')
-                link = raw_url.replace('http://', 'https://') if raw_url.startswith('http') else f'https://xueqiu.com{raw_url}'
-                ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d %H:%M') if created else ''
-                content = item.get('content', '') or ''
-                news_list.append(News(
-                    title=title[:200],
-                    content=content[:3000],
-                    time=ts,
-                    source='新闻',
-                    link=link,
-                ))
-            self.logger.info(f"  资讯 API: {len(news_list)} 条")
-        except Exception as e:
-            self.logger.warning(f"API 爬取资讯失败: {e}")
-        return news_list
 
     def _crawl_notices_via_api(self, symbol: str, max_pages: int = 10, days: int = 0) -> List[Notice]:
         """通过雪球官方 API 爬取公告。
