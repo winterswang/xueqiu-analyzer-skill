@@ -226,9 +226,23 @@ class XueqiuCrawler:
                 result.news = self._crawl_news_via_api(symbol, max_count=30, days=days)
                 self.logger.info(f"API 获取 {len(result.news)} 条资讯")
 
-                # ── DOM Fallback ──
-                if len(result.news) < 3:
-                    self.logger.info("⚠️ API 资讯不足 3 条，退到 DOM 翻页")
+                # ── DOM Fallback: 数量不足 OR 数据太旧 ──
+                need_dom = len(result.news) < 3
+                if not need_dom and result.news:
+                    newest = max(
+                        (n.time for n in result.news if n.time and len(n.time) >= 10),
+                        default='')
+                    if newest:
+                        try:
+                            newest_dt = datetime.strptime(newest[:10], '%Y-%m-%d')
+                            if (datetime.now() - newest_dt).days > 30:
+                                self.logger.info(f"⚠️ 资讯最新 {newest[:10]} 已超过 30 天，数据过期")
+                                need_dom = True
+                        except ValueError:
+                            pass
+                if need_dom:
+                    if not len(result.news) < 3:
+                        self.logger.info("⚠️ 资讯数据过期，退到 DOM 翻页")
                     if self._switch_tab(page, '资讯'):
                         self._crawl_items_with_pagination(
                             page, self._parse_single_news,
