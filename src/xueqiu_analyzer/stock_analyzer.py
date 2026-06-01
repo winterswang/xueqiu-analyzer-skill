@@ -18,6 +18,8 @@ from typing import List, Dict, Any, Optional
 from .crawler import XueqiuCrawler
 from .llm_client import LLMClient
 from .models import CrawlResult
+from .quality import ContentQualityChecker
+from .evaluator import Evaluator
 
 logger = logging.getLogger(__name__)
 
@@ -288,20 +290,33 @@ class DeepAnalyzer:
                 days: int = 0,
                 max_articles: int = 10,
                 max_news: int = 10,
-                max_notices: int = 10) -> dict:
+                max_notices: int = 10,
+                max_items: int = 0,
+                auto: bool = False,
+                quality_score: int = 150) -> dict:
         """
         完整分析流程：爬取 → 本地存储 → 分组 LLM 分析 → 合成报告
+
+        Args:
+            auto: 质量驱动模式 — 迭代爬取直到评分达标
+            quality_score: auto 模式评分阈值
+            max_items: 最大总内容条数（0=不限）
         """
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         stock_dir = self.storage_dir / symbol / ts
         stock_dir.mkdir(parents=True, exist_ok=True)
 
         # Phase 1: 爬取
-        logger.info(f"[{symbol}] 开始爬取... max_pages={max_pages}, days={days}, max_articles={max_articles}")
-        crawl_result = self.crawler.crawl(
-            symbol, max_pages=max_pages, max_articles=max_articles,
-            days=days, max_news=max_news, max_notices=max_notices
-        )
+        if auto:
+            crawl_result = self._auto_crawl(
+                symbol, max_pages, days, max_articles, max_news, max_notices,
+                max_items, quality_score)
+        else:
+            logger.info(f"[{symbol}] 开始爬取... max_pages={max_pages}, days={days}, max_articles={max_articles}")
+            crawl_result = self.crawler.crawl(
+                symbol, max_pages=max_pages, max_articles=max_articles,
+                days=days, max_news=max_news, max_notices=max_notices,
+                max_items=max_items)
 
         # Phase 2: 组装原文数据（带 index）
         raw_data = self._build_raw_data(crawl_result)
@@ -340,6 +355,69 @@ class DeepAnalyzer:
             'group_count': len(group_results),
             'group_results': group_results,
         }
+
+    def _auto_crawl(self, symbol: str, max_pages: int, days: int,
+                    max_articles: int, max_news: int, max_notices: int,
+                    max_items: int, quality_score: int) -> CrawlResult:
+        """质量驱动迭代爬取：爬→查→评→决定是否继续"""
+        import time as _time
+        max_rounds = min(max(3, max_pages // 2), 20)
+        quality_cfg = {'news_min_ratio': 0.4, 'notice_min_ratio': 0.2,
+                       'min_content_length': 20, 'min_article_length': 100}
+        checker = ContentQualityChecker(config=quality_cfg)
+        evaluator = Evaluator(llm=self.llm)
+
+        result = CrawlResult(symbol=symbol)
+        pages_per_round = max(2, max_pages // 3)
+        arts_per_round = max(3, max_articles // 2)
+
+        for round_num in range(1, max_rounds + 1):
+            logger.info(f"[{symbol}] auto 第 {round_num}/{max_rounds} 轮 "
+                        f"(pages={pages_per_round}, articles={arts_per_round})")
+
+            new_data = self.crawler.crawl(
+                symbol, max_pages=pages_per_round, max_articles=arts_per_round,
+                days=days, max_news=max_news, max_notices=max_notices,
+                max_items=max_items)
+            result = result.merge(new_data)
+
+            total = (len(result.discussions) + len(result.news) +
+                     len(result.notices) + len(result.articles))
+            logger.info(f"[{symbol}] 累计: {total} 条 "
+                        f"(讨论{len(result.discussions)} 资讯{len(result.news)} "
+                        f"公告{len(result.notices)} 专栏{len(result.articles)})")
+
+            # Layer 1: 硬指标检查
+            quality_report = checker.check(result)
+            logger.info(f"[{symbol}] 健康分: {quality_report.health_score}, "
+                        f"healthy={quality_report.is_healthy}")
+
+            if not quality_report.is_healthy:
+                if round_num >= max_rounds:
+                    logger.warning(f"[{symbol}] ⚠️ 达到最大轮次，硬指标仍不及格，降级分析")
+                    break
+                pages_per_round = min(pages_per_round + max(1, pages_per_round // 2), max_pages)
+                arts_per_round = min(arts_per_round + 2, max_articles)
+                _time.sleep(1)
+                continue
+
+            # Layer 2: LLM 充分性评估
+            evaluation = evaluator.evaluate(result)
+            logger.info(f"[{symbol}] 充分性评分: {evaluation.effective_score} "
+                        f"(≥{quality_score}=停)")
+
+            if evaluation.total_score >= quality_score:
+                logger.info(f"[{symbol}] ✅ 信息充分，停止迭代")
+                break
+            elif round_num >= max_rounds:
+                logger.warning(f"[{symbol}] ⚠️ 达到最大轮次，强制进入分析")
+                break
+            else:
+                pages_per_round = min(pages_per_round + max(1, pages_per_round // 2), max_pages)
+                arts_per_round = min(arts_per_round + 2, max_articles)
+                _time.sleep(2)
+
+        return result
 
     def _build_raw_data(self, result: CrawlResult) -> dict:
         """给每条数据分配全局 index"""
