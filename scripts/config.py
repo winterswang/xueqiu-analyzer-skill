@@ -5,6 +5,16 @@ import os
 import logging
 from pathlib import Path
 
+# 自动加载项目 .env（不依赖 bash 环境）
+try:
+    from dotenv import load_dotenv
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _dotenv_path = os.path.join(_project_root, '.env')
+    if os.path.exists(_dotenv_path):
+        load_dotenv(_dotenv_path, override=False)
+except ImportError:
+    pass
+
 # 日志配置
 def setup_logging(name: str = __name__, level: int = logging.INFO) -> logging.Logger:
     """配置日志系统"""

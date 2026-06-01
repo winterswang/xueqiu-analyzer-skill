@@ -10,6 +10,16 @@ import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
+# 自动加载项目 .env（不依赖 bash 环境）— 必须在 os.environ 读取之前
+try:
+    from dotenv import load_dotenv
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _dotenv_path = os.path.join(_project_root, '.env')
+    if os.path.exists(_dotenv_path):
+        load_dotenv(_dotenv_path, override=False)
+except ImportError:
+    pass
+
 # 从环境变量读取账号配置（安全方式）
 XUEQIU_ACCOUNT = {
     'phone': os.environ.get('XUEQIU_PHONE', ''),

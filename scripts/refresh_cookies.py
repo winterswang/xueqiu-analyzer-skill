@@ -24,6 +24,16 @@ import time
 import argparse
 from pathlib import Path
 
+# 自动加载项目 .env（不依赖 bash 环境）
+try:
+    from dotenv import load_dotenv
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _dotenv_path = os.path.join(_project_root, '.env')
+    if os.path.exists(_dotenv_path):
+        load_dotenv(_dotenv_path, override=False)
+except ImportError:
+    pass
+
 PROJECT_ROOT = Path(__file__).parent.parent
 PROJECT_COOKIES = PROJECT_ROOT / 'config' / 'cookies' / 'xueqiu.json'
 DEFAULT_COOKIES = Path(os.path.expanduser('~/.xueqiu_crawler/cookies.json'))
