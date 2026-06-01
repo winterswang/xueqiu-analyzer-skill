@@ -16,6 +16,15 @@ from dataclasses import dataclass, asdict
 from typing import Optional, List
 from pathlib import Path
 
+# 防御性加载 .env（模块被独立 import 时也能拿到环境变量）
+try:
+    from dotenv import load_dotenv
+    _dotenv_path = Path(__file__).resolve().parent.parent.parent / '.env'
+    if _dotenv_path.exists():
+        load_dotenv(_dotenv_path, override=False)
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 # DeepSeek API 配置
