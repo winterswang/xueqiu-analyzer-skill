@@ -10,7 +10,16 @@ import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# 自动加载项目 .env（不依赖 shell 环境），已存在的环境变量优先
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
+try:
+    from dotenv import load_dotenv
+    _dotenv_path = _PROJECT_ROOT / '.env'
+    if _dotenv_path.exists():
+        load_dotenv(_dotenv_path, override=False)
+except ImportError:
+    pass
+
 _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / 'config' / 'config.yaml'
 
 
