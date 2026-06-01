@@ -4,8 +4,10 @@ xueqiu-analyzer V3 — 深度分析器
 生成结构化投资分析报告，支持不同分析模板。
 """
 
+import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 from .models import CrawlResult, EvaluationResult
 from .llm_client import LLMClient

@@ -17,6 +17,16 @@ from pathlib import Path
 # 添加脚本目录到 path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# 自动加载项目 .env（不依赖 bash 环境）
+try:
+    from dotenv import load_dotenv
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _dotenv_path = os.path.join(_project_root, '.env')
+    if os.path.exists(_dotenv_path):
+        load_dotenv(_dotenv_path, override=False)
+except ImportError:
+    pass
+
 from stock_crawler_v2 import XueqiuStockCrawlerV2 as XueqiuStockCrawler
 from report_generator import ReportGenerator
 

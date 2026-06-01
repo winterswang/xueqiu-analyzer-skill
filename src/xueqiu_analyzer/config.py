@@ -6,14 +6,20 @@ xueqiu-analyzer V3 — 配置加载
 
 import os
 import json
-import logging
 import yaml
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
-
+# 自动加载项目 .env（不依赖 shell 环境），已存在的环境变量优先
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
+try:
+    from dotenv import load_dotenv
+    _dotenv_path = _PROJECT_ROOT / '.env'
+    if _dotenv_path.exists():
+        load_dotenv(_dotenv_path, override=False)
+except ImportError:
+    pass
+
 _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / 'config' / 'config.yaml'
 
 
@@ -52,8 +58,9 @@ def _load_openclaw_provider() -> Optional[Dict]:
                     'base_url': provider.get('baseUrl', ''),
                     'models': [m.get('id', '') for m in provider.get('models', [])],
                 }
-    except Exception as e:
-        logger.debug(f"openclaw.json fallback 读取失败: {e}")
+    except Exception:
+        # openclaw.json 不可用或格式错误，使用 config.yaml + 环境变量即可
+        pass
     return None
 
 

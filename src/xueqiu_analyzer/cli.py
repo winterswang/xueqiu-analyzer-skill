@@ -17,6 +17,7 @@ from xueqiu_analyzer.models import CrawlResult
 from xueqiu_analyzer.evaluator import Evaluator
 from xueqiu_analyzer.analyzer import Analyzer
 from xueqiu_analyzer.orchestrator import Orchestrator
+from xueqiu_analyzer.stock_analyzer import DeepAnalyzer as StockAnalyzer
 
 
 def _setup_logging(verbose: bool = False):
@@ -79,10 +80,10 @@ def analyze(symbol, max_rounds, data, template):
 @cli.command()
 @click.argument('symbol')
 @click.option('--output', '-o', default=None, help='输出文件路径')
-@click.option('--max-pages', default=10, help='最大翻页数')
-@click.option('--max-articles', default=20, help='最大文章数')
-@click.option('--timeout', default=1200, help='超时时间(秒)')
-def crawl(symbol, output, max_pages, max_articles, timeout):
+@click.option('--max-pages', default=5, help='最大翻页数')
+@click.option('--max-articles', default=10, help='最大文章数')
+@click.option('--days', default=0, help='只看最近 N 天（0=不限）')
+def crawl(symbol, output, max_pages, max_articles, days):
     """只爬取数据，保存为 JSON"""
     try:
         from xueqiu_analyzer.crawler import XueqiuCrawler
@@ -95,7 +96,7 @@ def crawl(symbol, output, max_pages, max_articles, timeout):
 
     click.echo(f"开始爬取: {symbol}")
     result = crawler.crawl(symbol, max_pages=max_pages,
-                           max_articles=max_articles)
+                           max_articles=max_articles, days=days)
 
     # 保存
     if output:
@@ -112,9 +113,9 @@ def crawl(symbol, output, max_pages, max_articles, timeout):
 
     click.echo("✅ 爬取完成:")
     click.echo(f"  讨论: {len(result.discussions)}")
-    click.echo(f"  专栏: {len(result.articles)}")
     click.echo(f"  资讯: {len(result.news)}")
     click.echo(f"  公告: {len(result.notices)}")
+    click.echo(f"  文章: {len(result.articles)}")
     click.echo(f"  保存: {out_path}")
 
 
@@ -168,6 +169,76 @@ def reanalyze(data, template):
     report_path.write_text(report, encoding='utf-8')
 
     click.echo(f"✅ 分析完成: {report_path}")
+
+
+@cli.command()
+@click.argument('symbol')
+@click.option('--output-dir', '-o', default=None, help='输出目录（默认 ~/.xueqiu_stocks/{SYMBOL}/{timestamp}/）')
+@click.option('--max-pages', default=10, help='最大分页数（10页×20条=200条）')
+@click.option('--days', default=0, help='只看最近 N 天的数据（0=不限）')
+@click.option('--max-articles', default=10, help='最大专栏文章详情数')
+@click.option('--max-news', default=10, help='最大新闻正文爬取数（0=只爬标题）')
+@click.option('--max-notices', default=10, help='最大公告正文爬取数（0=只爬标题）')
+def deep_analyze(symbol, output_dir, max_pages, days, max_articles, max_news, max_notices):
+    """深度舆情分析：爬取 → 本地存储 → DeepSeek 分析 → Markdown 报告
+
+    数据规模参考：
+    - max_pages=10, days=0  →  ~180 条讨论 + 20 条新闻 + 20 条公告
+    - days=30               →  自动判断页数，通常 2-4 页
+    """
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S',
+    )
+
+    from pathlib import Path
+    from xueqiu_analyzer.config import get_config
+
+    config = get_config()
+
+    # storage_dir
+    if output_dir:
+        storage_dir = Path(output_dir)
+    else:
+        storage_dir = Path('~/.xueqiu_stocks').expanduser()
+
+    click.echo(f"📊 开始深度分析: {symbol}")
+    click.echo(f"   max_pages={max_pages}, days={days}, max_articles={max_articles}")
+    click.echo(f"   输出目录: {storage_dir}")
+    click.echo()
+
+    analyzer = StockAnalyzer(storage_dir=storage_dir)
+
+    import time
+    t0 = time.time()
+    result = analyzer.analyze(
+        symbol=symbol.upper(),
+        max_pages=max_pages,
+        days=days,
+        max_articles=max_articles,
+        max_news=max_news,
+        max_notices=max_notices,
+    )
+    t1 = time.time()
+
+    click.echo()
+    click.echo(f"✅ 分析完成 ({t1-t0:.0f}s)")
+    click.echo(f"   原始数据: {result['raw_file']}")
+    click.echo(f"   分析结果: {result['report_file']}")
+
+    analysis = result['analysis']
+    if 'error' not in analysis:
+        click.echo()
+        click.echo("📋 报告摘要:")
+        click.echo(f"   摘要: {analysis.get('summary', '')}")
+        click.echo(f"   看多: {len(analysis.get('bull_points', []))} 条")
+        click.echo(f"   看空: {len(analysis.get('bear_points', []))} 条")
+        click.echo(f"   主题: {len(analysis.get('topics', []))} 个")
+        click.echo(f"   洞见: {len(analysis.get('actionable_insights', []))} 条")
+    else:
+        click.echo(f"   ⚠️ LLM 分析出错: {analysis['error']}")
 
 
 @cli.command()

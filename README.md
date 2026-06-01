@@ -1,414 +1,255 @@
-# 雪球公司分析 Skill V3
+# 雪球公司分析 Skill V4
 
-> 输入股票代码，自动爬取雪球社区数据 → 多源财务数据 → AI 深度分析 → 生成结构化投资报告。
+> 输入股票代码，全自动爬取雪球社区数据 + PDF 公告正文 + AI 深度分析 → 结构化投资报告。
 
-**版本**: v3.1.0 ｜ **爬虫引擎**: Playwright ｜ **分析模型**: DeepSeek
+**版本**: 4.0.0-Hybrid ｜ **爬虫**: Playwright + 雪球内部 API 混合 ｜ **模型**: DeepSeek ｜ **覆盖**: A 股 / 港股 / 美股
 
 ---
 
-## 1. 快速开始
+## 1. 能力一览
 
-### 安装
+| 能力 | 说明 | 数据量（茅台实测） |
+|------|------|-------------------|
+| 🕸️ 讨论爬取 | API 分页（10 页 × 20 条） | **86 条**，含互动指标 |
+| 📰 资讯爬取 | DOM 翻页 + 详情正文提取 | **47 条**，正文 200-2200+ 字 |
+| 📋 公告爬取 | API 分页 + PDF 正文（PyMuPDF） | **19 条**，正文 640-8017 字/条 |
+| ✍️ 专栏文章 | type=2 标记 + `【专栏` 前缀匹配 | **18 篇**，LLM 正文提取 |
+| 📊 硬指标质检 | Layer 1 纯代码检测（不用 LLM，省 token） | 内容完整率 + 健康分 0-100 |
+| 🤖 LLM 评估 | Layer 2 信息充分性评估（8 主题打分） | 150 分触发充分通过 |
+| 📝 投资报告 | 8 维度深度分析 + 投资决策 | **155/200 分**，6543 字 |
+| 🔄 双向降级 | API 失败 → 自动退到 DOM 翻页 | 三 tab 独立降级 |
+
+---
+
+## 2. 架构
+
+```
+xueqiu analyze <symbol>
+         │
+         ▼
+    orchestrator.py ── 编排：迭代爬取 → 硬指标 → LLM 评估 → 深度分析
+         │
+    ┌────┼────┬──────────┐
+    ▼    ▼    ▼          ▼
+  讨论  资讯  公告      专栏文章
+  API   DOM  API+PDF   LLM提取
+    │    │    │          │
+    └────┴────┴──────────┘
+         │
+         ▼
+    quality.py ── Layer 1 硬指标（健康分 < 70 → 定向重爬）
+         │
+         ▼
+    evaluator.py ── Layer 2 LLM 评估（8 主题 ≥ 150 → 充分）
+         │
+         ▼
+    analyzer.py ── 8 维度投资分析报告
+```
+
+**模块分工**（5588 行 Python，70 个测试）：
+
+| 模块 | 职责 | 关键方法 |
+|------|------|---------|
+| `crawler.py`（1310 行） | API + Playwright 混合爬虫 | `_crawl_discussions_via_api`, `_crawl_discussion_detail` |
+| `extractor.py`（313 行） | LLM 驱动的文章正文提取 | `ScrapingExtractor.extract` |
+| `quality.py`（279 行） | Layer 1 硬指标检测 | `ContentQualityChecker.check` |
+| `evaluator.py`（281 行） | Layer 2 LLM 充分性评估 | `Evaluator.evaluate` |
+| `analyzer.py`（202 行） | 深度投资分析报告 | `Analyzer.analyze` |
+| `orchestrator.py`（349 行） | 全流程编排 | `Orchestrator.run` |
+| `models.py`（281 行） | 全局数据模型 | `CrawlResult`, `EvaluationResult` |
+| `financial_fetcher.py`（252 行） | 财务数据获取 | 雪球 API + financial-sdk CLI |
+| `cli.py`（251 行） | CLI 入口 | 6 个命令 |
+| `config.py`（138 行） | 配置加载 | YAML + 环境变量 + openclaw.json |
+
+---
+
+## 3. 快速开始
+
+### 3.1 安装
 
 ```bash
-cd /root/code/xueqiu-analyzer-skill
 pip install -r requirements.txt
 playwright install chromium
+pip install -e .
 ```
 
-### 新鲜 cookies（首次使用）
+### 3.2 配置 API Key
 
 ```bash
-.venv/bin/python -m xueqiu_analyzer.cli cookies
+export DEEPSEEK_API_KEY="sk-xxx"
 ```
 
-### 爬取 + 分析
+并在 `config/config.yaml` 中确认：
+```yaml
+llm:
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  api_key: "${DEEPSEEK_API_KEY}"
+```
+
+### 3.3 登录雪球（首次需要）
 
 ```bash
-# 完整分析：爬取 → 质检 → LLM评估 → 深度分析报告
-.venv/bin/python -m xueqiu_analyzer.cli analyze TCOM
-
-# 只爬数据（时间维度自动停止）
-.venv/bin/python -m xueqiu_analyzer.cli crawl TCOM
-
-# 自定义翻页和富化
-.venv/bin/python -m xueqiu_analyzer.cli crawl TCOM --max-pages 50 --max-articles 30 --timeout 1200
-
-# 仅评估已有数据
-.venv/bin/python -m xueqiu_analyzer.cli evaluate data/TCOM_data_20260526.json
-```
-
-### CLI 参数
-
-| 参数 | 默认 | 说明 |
-|------|:---:|------|
-| `--max-pages` | 10 | 最大翻页数（兜底，实际由时间停止控制） |
-| `--max-articles` | 20 | 详情富化上限（打开详情页补正文/评论） |
-| `--timeout` | 1200 | 总超时秒数 |
-| `--template` | analysis | 报告模板（analysis / conservative） |
-
----
-
-## 2. 输出示例
-
-```
-爬取完成: 88 讨论, 11 专栏, 10 资讯, 10 公告
-
-data/
-├── AAPL_data_20260526_224432.json      # 完整原始数据
-├── AAPL_evaluation_20260526_*.md       # 信息充分性评估
-└── AAPL_report_20260526_*.md           # 投资分析报告
+python -m xueqiu_analyzer.cli cookies  # 引导登录
 ```
 
 ---
 
-## 3. 架构设计
+## 4. 使用示例
 
-```
-┌──────────────────────────────────────────────────────┐
-│                   xueqiu-analyzer V3                  │
-├──────────────────────────────────────────────────────┤
-│                                                      │
-│  CLI → Orchestrator                                  │
-│          │                                           │
-│          ├─ Crawler (Playwright)                     │
-│          │    ├─ discussions · 时间停止               │
-│          │    ├─ articles (专栏) · 自动分离 + 详情富化 │
-│          │    ├─ news · 时间停止                      │
-│          │    └─ notices · 首页 20 条                 │
-│          │                                           │
-│          ├─ FinancialFetcher                         │
-│          │    ├─ 雪球 API → PE/PB/市值/52周           │
-│          │    └─ financial-sdk → ROE/ROIC/利润率/增速  │
-│          │                                           │
-│          ├─ QualityChecker (Layer 1: 硬指标)          │
-│          │    └─ 内容完整率 + 健康分 → <70 定向重爬    │
-│          │                                           │
-│          ├─ Evaluator (Layer 2: LLM 评分)            │
-│          │    └─ 8维度 × 25分 → ≥150 进入分析         │
-│          │                                           │
-│          └─ Analyzer (LLM 深度分析)                   │
-│               └─ 执行摘要 + 8主题 + 投资决策           │
-│                                                      │
-└──────────────────────────────────────────────────────┘
+### 4.1 全流程分析
+
+```bash
+# 自动爬取 + 质检 + LLM 评估 + 深度分析
+DEEPSEEK_API_KEY=sk-xxx python -m xueqiu_analyzer.cli analyze SH600519
+
+# 输出:
+#   讨论: 86 | 资讯: 47 | 公告: 19 | 文章: 18
+#   评分: 155/200 → 充分通过
 ```
 
-### 核心模块
+### 4.2 单独爬取
 
-| 模块 | 路径 | 职责 |
-|------|------|------|
-| `crawler.py` | `src/xueqiu_analyzer/` | Playwright 爬虫：登录、Tab切换、分页、JS结构化提取 |
-| `models.py` | 同上 | 数据模型：Discussion/Article/News/Notice/FinancialData |
-| `quality.py` | 同上 | Layer 1 硬指标：内容完整率、健康分、定向重爬建议 |
-| `evaluator.py` | 同上 | Layer 2 LLM 评分：8维度充分性评估 |
-| `analyzer.py` | 同上 | LLM 深度分析：执行摘要 + 8主题 + 投资决策 |
-| `financial_fetcher.py` | 同上 | 财务数据：雪球API + financial-sdk CLI |
-| `cli.py` | 同上 | CLI 入口：analyze/crawl/evaluate/reanalyze/cookies |
-| `orchestrator.py` | 同上 | 迭代编排：crawl→quality→evaluate→analyze |
+```bash
+# 爬取 + 详情提取
+python -m xueqiu_analyzer.cli crawl PDD --max-pages 5 --max-articles 5
+
+# 输出: data/PDD_data_20260530_173325.json
+```
+
+### 4.3 评估已有数据
+
+```bash
+python -m xueqiu_analyzer.cli evaluate --data data/PDD_data_20260530_173325.json
+
+# 输出:
+#   总分: 120/200 | 充分性: 基本充分
+#   估值分析:  5分 | 商业模式: 15分 | ...
+```
+
+### 4.4 重新分析已有数据
+
+```bash
+python -m xueqiu_analyzer.cli reanalyze --data data/SH600519_data_20260530_173307.json
+
+# 输出: data/SH600519_report_20260530_173432.md
+```
+
+### 4.5 跨股对比分析
+
+```bash
+# 爬取多只股票（三市场）
+python -m xueqiu_analyzer.cli crawl SH600519 --max-pages 5
+python -m xueqiu_analyzer.cli crawl 09992 --max-pages 5
+python -m xueqiu_analyzer.cli crawl PDD --max-pages 5
+
+# 分别评估
+python -m xueqiu_analyzer.cli evaluate --data data/SH600519_data_*.json
+python -m xueqiu_analyzer.cli evaluate --data data/09992_data_*.json
+python -m xueqiu_analyzer.cli evaluate --data data/PDD_data_*.json
+
+# 分别分析
+python -m xueqiu_analyzer.cli reanalyze --data data/SH600519_data_*.json
+python -m xueqiu_analyzer.cli reanalyze --data data/09992_data_*.json
+python -m xueqiu_analyzer.cli reanalyze --data data/PDD_data_*.json
+```
 
 ---
 
-## 4. 爬取机制（V3.1）
-
-### 时间维度停止
-
-不再按固定页数/条数停止，而是按**发布时间**判断：
-
-1. 每页解析 `.timeline__item` 中的时间字段
-2. 当一页出现 ≥3 条"昨天"或日期格式（`05-24` / `2026-05-24`）→ 停止翻页
-3. 讨论 tab 固定「最新」排序，确保按时间线获取今天全部内容
-
-### 翻页机制
-
-- 雪球使用传统页码分页（`[1] [2] ... [下一页]`），非无限滚动
-- 爬虫点击「下一页」逐页翻页，每页解析后立即存入（DOM 换页失效）
-- 兜底：最多 `--max-pages` 页，或连续 3 页无新内容时停止
-
-### 专栏文章分离
-
-从讨论页自动分离专栏文章：
-
-```
-检测 h3 含「专栏」→  正文 ≥80字 & 不以「回复」开头 → articles[]
-                     正文 <80字 或 以「回复」开头  → discussions[]（清理前缀）
-```
-
-### 详情富化
-
-- 专栏文章优先：先 articles 后 discussions
-- 打开详情页提取：完整正文（专栏 ≤5000字、讨论 ≤2000字）、评论列表（最多 30 条）
-
-### 公告
-
-仅取第一页 10-20 条，不翻页（公告格式与时间停止不兼容）。
-
-### 解析方式
-
-使用 `item.evaluate(JS)` 结构化提取，替代旧的 `inner_text() + regex`：
-
-| 提取项 | 方法 |
-|--------|------|
-| Author | `<a>` 标签提取，过滤"收起/展开/$股票名/时间串/icon" |
-| Time | 时间链接 regex |
-| Content | 优先 `.article__bd__detail` → 回退 `innerText` 减 chrome |
-| Comments | 详情页 `.comment-item` → `innerText` |
-| 去重 | 正文前 50 字符签名 |
-
-### 爬取性能
-
-| 股票 | 讨论 | 专栏 | 资讯 | 公告 | 耗时 |
-|------|:---:|:---:|:---:|:---:|:---:|
-| 🍎 AAPL | ~90 | ~10 | ~10 | ~10 | ~4 min |
-| 🐧 00700 | ~440 | ~20 | ~10 | ~10 | ~6 min |
-| 🍶 茅台 | ~490 | ~13 | ~10 | ~10 | ~6 min |
-
----
-
-## 5. 数据模型
-
-### CrawlResult
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| symbol | str | 股票代码 |
-| name | str | 雪球显示名 |
-| price | str | 当前价 |
-| discussions | list[Discussion] | 讨论帖 |
-| articles | list[Article] | 专栏文章 |
-| news | list[News] | 资讯 |
-| notices | list[Notice] | 公告 |
-| financial_data | FinancialData | 财务指标 |
-| crawled_at | ISO timestamp | 爬取时间 |
-
-### Discussion
-
-| 字段 | 说明 |
-|------|------|
-| author | 作者（JS 结构化提取） |
-| content | 正文（≤2000 字符） |
-| time | 发布时间 |
-| link | 详情页链接 |
-| comments | list[str] · 评论区（≤30 条） |
-| comment_count / forward_count / like_count | 互动数据 |
-
-### Article
-
-| 字段 | 说明 |
-|------|------|
-| title | 专栏标题（如「专栏腾讯的熵增困境...」） |
-| author | 作者 |
-| content | 全文（≤5000 字符，从详情页提取） |
-| time | 发布时间 |
-| link | 文章链接 |
-| article_id | 雪球文章 ID |
-| comments / comment_count / like_count | 互动数据 |
-
-### News
-
-| 字段 | 说明 |
-|------|------|
-| title | 标题（timeline 拆出） |
-| content | 正文（详情页提取，≤5000 字符） |
-| time | 发布时间 |
-| source | 来源（新闻/公告/研报/媒体） |
-| link | 外部链接 |
-
-### Notice
-
-| 字段 | 说明 |
-|------|------|
-| title | 公告标题 |
-| content | SEC→结构化摘要；雪球内部→正文 |
-| link | SEC EDGAR 或雪球详情页 |
-| pdf_link | PDF 下载链接 |
-| notice_type | 公告类型 |
-
-### FinancialData
-
-| 字段 | 来源 | 说明 |
-|------|------|------|
-| pe_ttm | 雪球 API | PE(TTM) |
-| pb | 雪球 API | 市净率 |
-| roe | financial-sdk (雪球 fallback) | ROE |
-| gross_margin | financial-sdk | 毛利率 |
-| net_margin | financial-sdk | 净利率 |
-| revenue_growth | financial-sdk | 营收增速 YoY |
-| profit_growth | financial-sdk | 利润增速 YoY |
-| market_cap | 雪球 API | 总市值 |
-| low52w / high52w | 雪球 API | 52周区间 |
-| yearly_roic | (暂空) | 多年 ROIC 趋势 |
-
----
-
-## 6. 迭代分析流程
-
-```
-Round 1
-  ├─ crawl (pages=5, articles=10)
-  ├─ QualityChecker → 健康分
-  │   ├─ < 70 → 定向重爬
-  │   └─ ≥ 70 → Evaluator (LLM 8维度评分)
-  │       ├─ ≥ 150 → ✅ 进入分析
-  │       ├─ < 150 & round < max → 🔄 继续
-  │       └─ round = max → ⚠️ 强制进入
-```
-
-### 质量报告（Layer 1 硬指标）
-
-```
-📊 爬取数据质量报告
-健康分: 91/100 ✅
-
-内容完整率:
-| 类别 | 总数 | 有内容 | 完整率 |
-|------|:---:|:---:|:---:|
-| 讨论 | 88  | 88  | 100% ✅
-| 专栏 | 11  | 11  | 100% ✅
-| 资讯 | 10  | 10  | 100% ✅
-| 公告 | 10  | 10  | 100% ✅
-
-财务数据: 7/7 100% ✅
-```
-
-### LLM 评分（Layer 2）
-
-| 主题 | 满分 | 评估内容 |
-|------|:---:|----------|
-| 估值分析 | 25 | DCF/相对估值/历史对比 |
-| 商业模式 | 25 | 护城河/可持续性 |
-| 财务质量 | 25 | 利润率/ROE/FCF/增速 |
-| 竞争格局 | 25 | 竞对/市场份额/壁垒 |
-| 管理层 | 25 | 履历/战略/资本配置 |
-| 风险因素 | 25 | 风险识别与量化 |
-| 用户价值 | 25 | 真实用户反馈/NPS |
-| 未来前景 | 25 | 增长逻辑/第二曲线 |
-
-总分 ≥150 进入最终分析。
-
----
-
-## 7. 配置
-
-`src/xueqiu_analyzer/config.yaml`：
+## 5. 配置参考（config/config.yaml）
 
 ```yaml
 llm:
-  model: deepseek-chat
-  base_url: https://api.deepseek.com
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  api_key: "${DEEPSEEK_API_KEY}"
+  max_tokens: 8000
+  temperature: 0.7
 
 crawler:
   headless: true
-  delay_min: 3
+  delay_min: 3          # 模拟人类延迟（秒）
   delay_max: 8
+  timeout: 30000
 
 evaluator:
-  score_threshold: 150
-  max_rounds: 3
+  score_threshold: 150  # 充分性通过阈值
+  max_rounds: 3         # 最大迭代轮次
 
-quality:
+quality:                # Layer 1 硬指标
   health_threshold: 70
   news_min_ratio: 0.5
   notice_min_ratio: 0.3
   min_content_length: 20
 ```
 
-**API Key 优先级**：
-1. 环境变量 `DEEPSEEK_API_KEY`
-2. `config/config.yaml` 中的占位符（自动替换）
-3. OpenClaw provider 配置
+---
+
+## 6. 实测效果
+
+### 三市场验证（2026-05-30，max_pages=5）
+
+| 指标 | 🍶 茅台 (SH600519) | 🫧 泡泡玛特 (09992) | 📦 PDD |
+|------|-------------------|---------------------|--------|
+| **市场** | A 股 | 港股 | 美股（NASDAQ） |
+| **讨论** | 86 条 | 81 条 | 54 条 |
+| **资讯** | 47 条（DOM） | 49 条（DOM） | 48 条（DOM） |
+| **公告** | 19 条（**19/19 PDF** ✅） | 50 条（**19/20 PDF** ✅） | 50 条（SEC 无 PDF ⏳） |
+| **文章** | 18 篇 | 22 篇 | 10 篇 |
+| **股价** | ¥1326.00 | 未提取 | $84.44 |
+| **评估分** | **155/200** ✅ | **145/200** | **120/200** |
+| **报告** | 6543 字, 34 引用 | 4925 字, 21 引用 | 6473 字, 30 引用 |
+
+### 特征
+
+| | 茅台 | 泡泡玛特 | PDD |
+|--|------|---------|-----|
+| 核心讨论主题 | 估值内卷、回购分红 | 段永平持仓、IP 运营 | 仅退款争议、利润率 |
+| 公告亮点 | Q1 季报 + 2025 审计报告（8017 字） | 年报 + 组织章程 + 8 条回购 | 6-K/20-F SEC 摘要 |
+| LLM 关键判断 | "合理偏低，持有" | "合理偏高，持有" | "买入"（估值低 + EPS miss 修复） |
 
 ---
 
-## 8. 项目结构
+## 7. 设计决策
 
-```
-xueqiu-analyzer-skill/
-├── SKILL.md                     # Skill 元数据 + 完整文档
-├── README.md                    # 本文档
-├── requirements.txt
-├── src/xueqiu_analyzer/
-│   ├── __init__.py
-│   ├── cli.py                   # CLI 入口
-│   ├── orchestrator.py          # 迭代编排
-│   ├── crawler.py               # Playwright 爬虫 (~1050行)
-│   ├── models.py                # 数据模型 (dataclass)
-│   ├── config.py                # 配置加载
-│   ├── config.yaml              # 配置文件
-│   ├── financial_fetcher.py     # 财务数据
-│   ├── quality.py               # Layer 1 硬指标
-│   ├── evaluator.py             # Layer 2 LLM 评分
-│   ├── analyzer.py              # LLM 深度分析
-│   └── llm_client.py            # LLM API 封装
-├── prompts/
-│   ├── evaluation.md            # 充分性评估 Prompt
-│   ├── analysis.md              # 深度分析 Prompt
-│   └── conservative.md          # 保守版 Prompt
-├── tests/
-│   ├── test_modules.py
-│   ├── test_evaluator.py
-│   └── test_quality.py
-└── data/                        # 输出目录
-```
-
----
-
-## 9. 系统依赖
-
-| 依赖 | 用途 |
-|------|------|
-| Python 3.11+ | 运行时 |
-| Playwright + Chromium | 浏览器爬虫 |
-| financial-sdk | 财务指标（ROE/ROIC/利润率） |
-| `FINANCIAL_SDK_DIR` 环境变量 | financial-sdk 路径（默认 `/root/code/financial-sdk`） |
-
----
-
-## 10. OpenClaw Agent 指引
-
-### 触发关键词
-
-| 模式 | 示例 | 动作 |
+| 决策 | 选择 | 理由 |
 |------|------|------|
-| `分析 {symbol}` | "分析 TCOM" | `cli.py analyze` |
-| `爬取 {symbol}` | "爬一下00700" | `cli.py crawl` |
+| 讨论获取 | API 分页（type=11） | 10 条 → 159 条，16× 提升 |
+| 资讯获取 | DOM 直接爬取 | `interview/search.json` 是访谈接口，非实时新闻 |
+| 公告获取 | API 分页 + PDF 解析（PyMuPDF） | 港股/A 股 PDF 可提取，SEC 待适配 |
+| 文章提取 | DeepSeek LLM + CSS selector fallback | 智能提取 + 保底降级 |
+| 专栏区分 | API type=2 / DOM `【专栏` 前缀 | 服务器标记 + 内容前缀，双重保障 |
+| 双向降级 | 每个 tab 独立检查 `len < 3` | 部分失败不阻塞其他 tab |
 
-symbol 格式：`TCOM`, `PDD`, `00700`, `SH600519`, `SZ300760`
+---
 
-### 调用方式
+## 8. 局限与路线
+
+| 局限 | 状态 | 计划 |
+|------|------|------|
+| 美股 SEC 公告正文提取 | ⏳ 未实现 | 需要 EDGAR 定向解析 |
+| 港股股价提取 | ⏳ 选择器失效 | 更新 .stock-current 兼容性 |
+| ScrapingExtractor JSON 截断 | 🔧 已加修复 | 持续监控成功率 |
+| 资讯详情耗时 ~3 分钟 | ⚠️ 瓶颈 | 可选异步并行 |
+
+---
+
+## 9. 开发与贡献
 
 ```bash
-cd /root/code/xueqiu-analyzer-skill && .venv/bin/python -m xueqiu_analyzer.cli analyze {symbol}
+# 运行测试
+python -m pytest tests/ -v
+
+# 代码质量检查
+python -m pyflakes src/xueqiu_analyzer/
 ```
 
-### 注意事项
-
-- Playwright 同一时间只能跑一个实例
-- 全流程分析约 5-8 分钟（含 LLM 调用）
-- cookies 过期时执行 `cli.py cookies` 刷新
-
----
-
-## 11. 已知限制
-
-1. **时间停止**：热门股票当天可达 400+ 条，触及 `--max-pages` 兜底
-2. **专栏误判**：少量「回复」型内容可能被错归 articles（<5%，已通过字数+前缀过滤）
-3. **评论区**：详情页选择器可能因页面改版失效
-4. **公告**：仅取第一页，旧公告不抓
-5. **多年 ROIC**：financial-sdk 暂未集成
-6. **DOM 脆弱**：严重依赖雪球页面结构
+**分支策略**：
+- `main` — 稳定版本（V3.0.2）
+- `feature/v4-hybrid-crawl` — V4 混合爬虫（已合并 #8 + #9，含 DOM 降级）
+- `feature/scrapegraph-extractor` — ScrapingExtractor 实验分支（不合并）
+- `feature/api-based-crawl` — #9 纯 API 方案（已被 V4 替代）
 
 ---
 
-## 版本历史
-
-| 版本 | 日期 | 核心变更 |
-|------|------|----------|
-| v3.1.0 | 2026-05-26 | 时间维度停止、四分类分离、JS 结构化提取、评论爬取、专栏详情富化 |
-| v3.0.0 | 2026-05-24 | 模块化重构、financial-sdk 替代 AkShare、Layer 1 硬指标 |
-| v2.2.1 | 2026-05-24 | 代码审查修复 |
-| v2.0.0 | 2026-03-06 | Playwright + 双 Prompt + 智能迭代 |
-| v1.0.0 | 2026-03-05 | 基础爬虫 + GLM-5 分析 |
-
-## License
-
-MIT
+*最后更新: 2026-05-30*

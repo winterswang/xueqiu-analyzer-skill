@@ -14,6 +14,8 @@ import re
 import time
 import random
 import logging
+import requests
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -22,13 +24,37 @@ try:
 except ImportError:
     raise ImportError("请安装 playwright: pip install playwright && playwright install chromium")
 
+try:
+    import fitz  # PyMuPDF for PDF text extraction
+except ImportError:
+    fitz = None
+
 from .models import (
     CrawlResult, Discussion, News, Notice, Article,
 )
+from .extractor import ScrapingExtractor
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_DIR = os.path.expanduser('~/.xueqiu_crawler')
+
+
+def _xueqiu_url_for_symbol(symbol: str) -> str:
+    """将股票代码转换为雪球股票详情页 URL
+
+    A 股：6位数字 → 添加 SH/SZ 前缀
+    港股：5位数字（00700）→ 直接使用
+    美股：字母代码（PDD/AAPL）→ 直接使用
+    """
+    symbol = symbol.strip()
+    # A 股：6位数字
+    if symbol.isdigit() and len(symbol) == 6:
+        if symbol.startswith('6') or symbol.startswith('5'):
+            return f'https://xueqiu.com/S/SH{symbol}'
+        else:  # 0, 1, 2, 3, 8 开头 → 深圳
+            return f'https://xueqiu.com/S/SZ{symbol}'
+    # 其他（港股如 00700，美股如 PDD）直接使用
+    return f'https://xueqiu.com/S/{symbol}'
 
 
 # ── 免责声明/无用内容关键词集合 ──
@@ -67,9 +93,13 @@ class XueqiuCrawler:
         self.credentials_path = os.path.join(self.config_dir, 'credentials.yaml')
         self.credentials = self._load_credentials()
         self.logger = logger
+        self.extractor = ScrapingExtractor()
 
     def crawl(self, symbol: str, max_pages: int = 5,
-              max_articles: int = 10) -> CrawlResult:
+              max_articles: int = 10,
+              days: int = 0,
+              max_news: int = 20,
+              max_notices: int = 20) -> CrawlResult:
         """
         爬取股票详情页数据
 
@@ -77,6 +107,9 @@ class XueqiuCrawler:
             symbol: 股票代码
             max_pages: 最大分页数
             max_articles: 最大文章数
+            days: 时间过滤（0=不限，N=只看最近 N 天）
+            max_news: 最大爬取新闻正文数（0=只爬标题）
+            max_notices: 最大爬取公告正文数（PDF解析）
 
         Returns:
             CrawlResult
@@ -102,9 +135,9 @@ class XueqiuCrawler:
                 self._close_modal(page)
 
                 # 2. 访问股票详情页
-                url = f'https://xueqiu.com/S/{symbol}'
+                url = _xueqiu_url_for_symbol(symbol)
                 self.logger.info(f"访问股票详情页: {url}")
-                page.goto(url, timeout=self.timeout)
+                page.goto(url, timeout=max(self.timeout, 60000))
                 self.human_delay(3, 6)
 
                 self._close_modal(page)
@@ -143,201 +176,136 @@ class XueqiuCrawler:
                         result.change = change_elem.inner_text().strip()[:50]
                         break
 
-                # ========== 爬取讨论 (最新) ==========
-                self.logger.info("=== 爬取讨论(最新) ===")
-                if self._switch_tab(page, '讨论'):
-                    self.human_delay(1, 2)
-                    self._crawl_items_with_pagination(
-                        page, self._parse_single_discussion,
-                        result.discussions, max_pages=max_pages, target_count=5000)
-                    self.logger.info(f"获取 {len(result.discussions)} 条讨论")
+                # ========== 爬取讨论 ==========
+                self.logger.info("=== 爬取讨论 (API) ===")
+                api_discs = self._crawl_discussions_via_api(
+                    symbol, max_pages=max_pages, per_page=50, days=days)
+                for disc in api_discs:
+                    if disc.is_column and disc.link:
+                        result.articles.append(Article(
+                            title=disc.content[:80],
+                            author=disc.author,
+                            content=disc.content,
+                            time=disc.time,
+                            link=disc.link,
+                            is_column=True,
+                        ))
+                    else:
+                        result.discussions.append(disc)
+                self.logger.info(f"API 获取 {len(result.discussions)} 条讨论（含 {sum(1 for d in result.discussions if d.is_column)} 专栏）")
+
+                # ── DOM Fallback: API 数据不足时用 Playwright 补充 ──
+                if len(api_discs) < 3:
+                    self.logger.info("⚠️ API 讨论不足 3 条，退到 DOM 翻页")
+                    if self._switch_tab(page, '讨论'):
+                        self.human_delay(1, 2)
+                        self._crawl_items_with_pagination(
+                            page, self._parse_single_discussion,
+                            result.discussions, max_pages=max_pages, target_count=5000)
+                    # DOM 路径专栏分离: 【专栏 前缀匹配
+                    true_discs = []
+                    for d in result.discussions:
+                        content = (d.content or '').strip()
+                        if content.startswith('【专栏') and '专栏' in content[:30]:
+                            end = content.find('】')
+                            body = content[end+1:].lstrip('\n').strip() if end > 0 else ''
+                            is_reply = body.startswith('回复') or body.startswith('//@') or len(body) < 80
+                            if not is_reply:
+                                result.articles.append(Article(
+                                    title=content[1:end].strip() if end > 0 else content[:50],
+                                    author=d.author, content=body[:5000],
+                                    time=d.time, link=d.link, is_column=True,
+                                ))
+                                continue
+                        true_discs.append(d)
+                    result.discussions = true_discs
+                    self.logger.info(f"DOM 补充: {len(result.discussions)} 讨论, {len(result.articles)} 专栏")
 
                 # ========== 爬取资讯 ==========
-                self.logger.info("=== 爬取资讯 ===")
+                self.logger.info("=== 爬取资讯 (Playwright DOM) ===")
+                # interview/search.json 是雪球访谈接口，非实时新闻，直接走 DOM
                 if self._switch_tab(page, '资讯'):
                     self._crawl_items_with_pagination(
                         page, self._parse_single_news,
                         result.news, max_pages=max_pages, target_count=5000)
-                    self.logger.info(f"获取 {len(result.news)} 条资讯")
+                self.logger.info(f"获取 {len(result.news)} 条资讯")
 
-                    # 爬取资讯详情（仅对真正的文章链接，过滤股票页自身链接）
-                    if result.news:
-                        import re as _re
-                        news_with_link = [
-                            n for n in result.news
-                            if n.link and not _re.search(r'/S/[A-Z0-9]+$', n.link)
-                        ]
-                        if news_with_link:
-                            self.logger.info("爬取资讯详情...")
-                            for i, n in enumerate(news_with_link[:15]):
-                                try:
-                                    self.logger.info(f"  [{i+1}/{len(news_with_link)}] {n.title[:40]}...")
-                                    detail_page = browser.new_page()
-                                    detail_page.goto(n.link, timeout=self.timeout)
-                                    self.human_delay(2, 3)
-                                    self._close_modal(detail_page)
-                                    # 多选择器兼容新旧版雪球文章页
-                                    content = detail_page.evaluate('''() => {
-                                        const selectors = [
-                                            '.article__bd__detail',
-                                            '.detail-content',
-                                            '.article-content',
-                                            '[class*="article-detail"]',
-                                            '[class*="detail_body"]',
-                                            '.stock-news-content',
-                                        ];
-                                        for (const sel of selectors) {
-                                            const el = document.querySelector(sel);
-                                            if (el && el.innerText.trim().length > 20) {
-                                                return el.innerText.trim();
-                                            }
-                                        }
-                                        // fallback: 取可见文本中最长的段落
-                                        const paras = document.querySelectorAll('p, div.article-text');
-                                        let best = '';
-                                        for (const p of paras) {
-                                            const t = p.innerText.trim();
-                                            if (t.length > best.length) best = t;
-                                        }
-                                        return best;
-                                    }''')
-                                    if content and len(content) > 20:
-                                        # 检查是否为免责声明/无用内容
-                                        if _is_disclaimer(content):
-                                            self.logger.debug(f"    跳过免责声明 ({len(content)}字)")
-                                            n.content = ""
-                                            n.link = ""  # 后续质量检测可以识别
-                                        else:
-                                            n.content = content[:5000]
-                                            self.logger.debug(f"    获取到 {len(content)} 字正文")
-                                    detail_page.close()
-                                except Exception:
-                                    try:
-                                        detail_page.close()
-                                    except Exception:
-                                        pass
+                # ========== 爬取资讯详情（正文） ==========
+                if max_news > 0:
+                    self.logger.info(f"爬取 {min(max_news, len(result.news))} 条资讯详情...")
+                    for i, n in enumerate(result.news[:max_news]):
+                        detail = self._crawl_news_detail(browser, n.link)
+                        if detail:
+                            n.content = detail.get('content', '') or n.content
+                            if detail.get('title'):
+                                n.title = detail['title']
+                        if i < len(result.news) - 1:
+                            self.human_delay(1.5, 3.0)
+                    self.logger.info("资讯详情爬取完成")
 
                 # ========== 爬取公告 ==========
-                self.logger.info("=== 爬取公告 ===")
-                if self._switch_tab(page, '公告'):
-                    # 公告数量少，只需第一页10条，不翻页
-                    items = page.query_selector_all('.timeline__item')
-                    for item in items[:20]:
-                        try:
-                            nt = self._parse_single_notice(item)
-                            if nt:
-                                result.notices.append(nt)
-                        except Exception:
-                            pass
-                    self.logger.info(f"获取 {len(result.notices)} 条公告")
+                self.logger.info("=== 爬取公告 (API) ===")
+                result.notices = self._crawl_notices_via_api(symbol, max_pages=max_pages, days=days)
+                self.logger.info(f"API 获取 {len(result.notices)} 条公告")
 
-                    # 公告详情：SEC 摘要、雪球内部页面提取
-                    for nt in result.notices:
-                        if not nt.link:
-                            continue
-                        if 'sec.gov' in nt.link:
-                            nt.content = self._extract_notice_summary_from_title(nt)
-                        else:
+                # ── DOM Fallback ──
+                if len(result.notices) < 3:
+                    self.logger.info("⚠️ API 公告不足 3 条，退到 DOM")
+                    if self._switch_tab(page, '公告'):
+                        items = page.query_selector_all('.timeline__item')
+                        for item in items[:20]:
                             try:
-                                detail = self._crawl_notice_detail(page, nt.link)
-                                if detail:
-                                    nt.content = detail.get('content', '')
-                                    nt.pdf_link = detail.get('pdf_link', '')
+                                nt = self._parse_single_notice(item)
+                                if nt:
+                                    result.notices.append(nt)
                             except Exception:
                                 pass
+                    self.logger.info(f"DOM 补充: {len(result.notices)} 条公告")
 
-                # ========== 专栏文章分离 ==========
-                # 从讨论中分离出 true 专栏文章
-                # 规则：content 以「【专栏」开头 + 非回复（不以"回复"开头）+ 正文够长
-                true_discussions = []
-                for d in result.discussions:
-                    content = (d.content or '').strip()
-                    if content.startswith('【专栏') and '专栏' in content[:30]:
-                        end = content.find('】')
-                        body = content[end+1:].lstrip('\n').strip() if end > 0 else ''
-                        # Reply patterns: starts with "回复@", "//@", or very short
-                        is_reply = (body.startswith('回复')
-                                    or body.startswith('//@')
-                                    or len(body) < 80)
-                        if is_reply:
-                            true_discussions.append(d)
-                            continue
-                        title = content[1:end].strip() if end > 0 else content[:50]
-                        result.articles.append(Article(
-                            title=title,
-                            author=d.author,
-                            content=body[:5000],
-                            time=d.time,
-                            link=d.link,
-                            article_id=d.link.split('/')[-1] if d.link else '',
-                        ))
-                    else:
-                        true_discussions.append(d)
-                col_count = len(result.articles)
-                if col_count:
-                    self.logger.info(f"分离 {col_count} 篇专栏文章 → articles")
-                result.discussions = true_discussions
+                # ========== 爬取公告正文（PDF） ==========
+                if max_notices > 0:
+                    self.logger.info(f"爬取 {min(max_notices, len(result.notices))} 条公告正文...")
+                    success_count = 0
+                    fail_count = 0
+                    for i, nt in enumerate(result.notices[:max_notices]):
+                        if nt.link and (nt.link.endswith('.pdf') or 'stockmc.xueqiu.com' in nt.link):
+                            text = self._crawl_notice_pdf_text(nt.link)
+                            if text and len(text) > 50:
+                                nt.content = text
+                                success_count += 1
+                                self.logger.info(f"  ✅ [{i+1}/{min(max_notices, len(result.notices))}] {len(text)}字: {nt.title[:40]}")
+                            else:
+                                fail_count += 1
+                                self.logger.warning(f"  ❌ [{i+1}/{min(max_notices, len(result.notices))}] 提取失败: {nt.title[:40]}")
+                        else:
+                            self.logger.debug(f"  ⊘ 非PDF跳过: {nt.link}")
+                        if i < len(result.notices) - 1:
+                            self.human_delay(1.0, 2.0)
+                    self.logger.info(f"公告正文爬取完成: {success_count}成功/{fail_count}失败")
 
-                # Clean up residual 【专栏xxx】 or 专栏xxx prefix from discussions that are replies
-                for d in result.discussions:
-                    stripped = d.content
-                    if stripped.startswith('【专栏'):
-                        end = stripped.find('】')
-                        if end > 0:
-                            stripped = stripped[end+1:].lstrip('\n').strip()
-                    elif stripped.startswith('专栏') and len(stripped) > 4 and not stripped[2:4].isalpha():
-                        # Edge case: content starts with "专栏xxx" without 【】
-                        end = stripped.find('\n')
-                        if end > 0:
-                            stripped = stripped[end:].lstrip('\n').strip()
-                    d.content = stripped
-
-                # ========== 丰富详情（讨论+专栏文章+评论+正文） ==========
-                self.logger.info(f"\n爬取 {max_articles} 条详情富化...")
-                # Collect links: articles first (higher value), then discussions
-                detail_links = []
-                for art in result.articles:
-                    if art.link and re.match(r'https://xueqiu\.com/\d+/\d+', art.link):
-                        detail_links.append(('art', art, art.link))
+                # ========== 爬取文章 ==========
+                self.logger.info(f"\n爬取 {max_articles} 篇文章详情...")
+                # 从讨论和资讯中提取文章链接
+                article_links = []
                 for disc in result.discussions:
                     if disc.link and re.match(r'https://xueqiu\.com/\d+/\d+', disc.link):
-                        detail_links.append(('disc', disc, disc.link))
-                for n in result.news:
-                    if len(detail_links) >= max_articles:
-                        break
-                    if n.link and re.match(r'https://xueqiu\.com/\d+/\d+', n.link):
-                        detail_links.append(('news', n, n.link))
+                        article_links.append(disc.link)
+                if len(article_links) < max_articles:
+                    for n in result.news:
+                        if n.link and re.match(r'https://xueqiu\.com/\d+/\d+', n.link):
+                            article_links.append(n.link)
 
                 seen = set()
-                enriched_disc = 0
-                enriched_art = 0
-                for kind, obj, link in detail_links[:max_articles]:
+                for link in article_links[:max_articles]:
                     if link in seen:
                         continue
                     seen.add(link)
                     try:
-                        detail = self._crawl_discussion_detail(page, link)
-                        if not detail:
-                            continue
-                        if kind == 'art':
-                            if detail.get('full_content') and len(detail['full_content']) > len(obj.content):
-                                obj.content = detail['full_content'][:5000]
-                            if detail.get('comments'):
-                                obj.comments = detail.get('comments', [])
-                            obj.comment_count = detail.get('comment_count', 0)
-                            enriched_art += 1
-                        elif kind == 'disc':
-                            if detail.get('full_content') and len(detail['full_content']) > len(obj.content):
-                                obj.content = detail['full_content'][:2000]
-                            if detail.get('comments'):
-                                obj.comments = detail['comments']
-                            enriched_disc += 1
-                        # kind == 'news': skip, already handled separately
+                        article = self._crawl_article_detail(page, link)
+                        if article:
+                            result.articles.append(article)
                     except Exception:
                         pass
-
-                if enriched_disc or enriched_art:
-                    self.logger.info(f"  丰富 {enriched_disc} 条讨论, {enriched_art} 篇专栏")
 
                 # 保存 cookies
                 self._save_cookies(context)
@@ -346,9 +314,9 @@ class XueqiuCrawler:
                 browser.close()
 
         self.logger.info(f"爬取完成: {len(result.discussions)} 讨论, "
-                         f"{len(result.articles)} 专栏, "
                          f"{len(result.news)} 资讯, "
-                         f"{len(result.notices)} 公告")
+                         f"{len(result.notices)} 公告, "
+                         f"{len(result.articles)} 文章")
         return result
 
     # ========== 辅助方法（从 V2 迁移，逻辑不变）==========
@@ -544,13 +512,6 @@ class XueqiuCrawler:
         except Exception:
             return False
 
-    def _switch_sub_tab(self, page: Page, sub_tab_name: str) -> bool:
-        """Switch to a sub-tab within the current tab.
-        
-        Discussion tab has sub-tabs: 新帖, 热帖, 关注
-        """
-        return self._js_click(page, sub_tab_name)
-
     def _switch_tab(self, page: Page, tab_name: str) -> bool:
         self.logger.info(f"切换到 '{tab_name}' tab...")
         if self._js_click(page, tab_name):
@@ -562,218 +523,251 @@ class XueqiuCrawler:
                 return True
         return False
 
-    def _crawl_items_with_pagination(self, page: Page, parse_fn: callable,
-                                       result_list: list, max_pages: int = 100,
-                                       target_count: int = 1000):
-        """Navigate pages, parse items on each page, accumulate into result_list.
+    def _crawl_discussions_via_api(self, symbol: str, max_pages: int = 10,
+                                    per_page: int = 50,
+                                    days: int = 0) -> List[Discussion]:
+        """通过雪球官方 API 爬取讨论（支持真正的分页翻页）。
 
-        Time-aware stop: when items start showing '昨天' or date patterns (not 'today'),
-        we've crossed into the previous day and stop crawling.
+        API: GET https://xueqiu.com/query/v1/symbol/search/status.json
+        params: symbol, count, page, type=11 (讨论), sort=time, source=all
+
+        Args:
+            symbol: 股票代码
+            max_pages: 最大分页数
+            per_page: 每页条数（API 固定返回 20 条）
+            days: 时间过滤（0=不限，N=只看最近 N 天）
         """
-        seen_content = set()
-        stale_pages = 0
+        discussions = []
+        time_cutoff = 0
+        if days > 0:
+            time_cutoff = datetime.now().timestamp() - days * 86400
+
+        try:
+            cookies_path = Path(self.cookies_path)
+            if not cookies_path.exists():
+                cookies_path = Path(__file__).parent.parent.parent / 'config' / 'cookies' / 'xueqiu.json'
+            if cookies_path.exists():
+                with open(cookies_path) as f:
+                    cookies = json.load(f)
+            else:
+                self.logger.warning("未找到 cookies 文件，跳过 API 爬取")
+                return []
+
+            token = next((c['value'] for c in cookies if c['name'] == 'xq_a_token'), None)
+            if not token:
+                self.logger.warning("未找到 xq_a_token，跳过 API 爬取")
+                return []
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Cookie': f'xq_a_token={token}',
+                'Referer': f'https://xueqiu.com/S/{symbol}',
+                'Accept': 'application/json, text/plain, */*'
+            }
+
+            should_stop = False
+            for page_num in range(1, max_pages + 1):
+                url = (f'https://xueqiu.com/query/v1/symbol/search/status.json'
+                       f'?count={per_page}&comment=0&symbol={symbol}'
+                       f'&hl=0&source=all&sort=time&page={page_num}&q=&type=11')
+                resp = requests.get(url, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    break
+                items = resp.json().get('list', [])
+                if not items:
+                    break
+
+                for item in items:
+                    user = item.get('user', {})
+                    if not isinstance(user, dict):
+                        continue
+                    screen_name = user.get('screen_name', '')
+                    raw_content = item.get('description', '') or ''
+                    content = re.sub(r'<[^>]+>', '', raw_content).strip()
+                    status_id = item.get('id', '')
+                    user_id = user.get('id', '')
+                    created = item.get('created_at', 0)
+                    ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d %H:%M') if created else ''
+                    link = f'https://xueqiu.com/{user_id}/{status_id}'
+                    is_col = str(item.get('type', '')) == '2'
+
+                    # 时间过滤：遇到超出范围的帖子，停止爬取
+                    if days > 0 and created > 0 and created / 1000 < time_cutoff:
+                        self.logger.info(f"  [时间过滤] 第 {page_num} 页遇到 {days} 天前的帖子，停止")
+                        should_stop = True
+                        break
+
+                    if content and len(content) > 5:
+                        discussions.append(Discussion(
+                            author=screen_name,
+                            content=content[:500],
+                            time=ts,
+                            link=link,
+                            is_column=is_col,
+                        ))
+
+                self.logger.info(f"  API 页 {page_num}: {len(items)} 条 "
+                                 f"(累计 {len(discussions)} 条, 专栏 {sum(1 for d in discussions if d.is_column)})")
+
+                if len(items) < 20:
+                    break
+
+                self.human_delay(1.0, 2.0)
+
+        except Exception as e:
+            self.logger.warning(f"API 爬取讨论失败: {e}")
+        return discussions
+
+    def _crawl_notices_via_api(self, symbol: str, max_pages: int = 10, days: int = 0) -> List[Notice]:
+        """通过雪球官方 API 爬取公告。
+
+        API: GET https://xueqiu.com/statuses/stock_timeline.json
+        params: symbol_id, source=公告, count=10, page=N
+        """
+        notices = []
+        try:
+            cookies_path = Path(self.cookies_path)
+            if not cookies_path.exists():
+                cookies_path = Path(__file__).parent.parent.parent / 'config' / 'cookies' / 'xueqiu.json'
+            if cookies_path.exists():
+                with open(cookies_path) as f:
+                    cookies = json.load(f)
+            else:
+                self.logger.warning("未找到 cookies，跳过公告爬取")
+                return []
+            token = next((c['value'] for c in cookies if c['name'] == 'xq_a_token'), None)
+            if not token:
+                self.logger.warning("未找到 xq_a_token，跳过公告爬取")
+                return []
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Cookie': f'xq_a_token={token}',
+                'Referer': f'https://xueqiu.com/S/{symbol}',
+                'Accept': 'application/json, text/plain, */*'
+            }
+            should_stop = False
+            time_cutoff = datetime.now().timestamp() - days * 86400 if days > 0 else 0
+            for page_num in range(1, max_pages + 1):
+                if should_stop:
+                    break
+                url = (f'https://xueqiu.com/statuses/stock_timeline.json'
+                       f'?symbol_id={symbol}&count=10&source=%E5%85%AC%E5%91%8A&page={page_num}')
+                resp = requests.get(url, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+                items = data.get('list', [])
+                if not items:
+                    break
+                for item in items:
+                    desc = item.get('description', '') or ''
+                    # 提取标题：去掉 <a> 标签，非贪婪匹配避免吞掉整段文字
+                    title = re.sub(r'<a[^>]+>.*?</a>', '', desc).strip()
+                    title = title.replace('$拼多多(PDD)$', '').replace('$', '').strip()
+                    # 提取链接
+                    link_match = re.search(r'href="(https?://[^"]+)"', desc)
+                    link = link_match.group(1) if link_match else ''
+                    created = item.get('created_at', 0)
+                    ts = datetime.fromtimestamp(created / 1000).strftime('%Y-%m-%d') if created else ''
+                    # 过滤空标题（标题文本少于5字时跳过）
+                    if not title.strip() or len(title.strip()) < 5:
+                        self.logger.debug(f"跳过空标题公告: description={desc[:80]}")
+                        continue
+                    # 时间过滤：遇到超出范围的公告，停止爬取
+                    if days > 0 and created > 0 and created / 1000 < time_cutoff:
+                        self.logger.info(f"  公告 API 页 {page_num} 遇到 {days} 天前的公告，停止")
+                        should_stop = True
+                        break
+                    # 提取公告类型：[类型] 格式 → _detect_notice_type fallback
+                    type_match = re.search(r'\[(.+?)\]', title)
+                    nt_type = type_match.group(1) if type_match else _detect_notice_type(title)
+                    notices.append(Notice(
+                        title=title[:300],
+                        link=link,
+                        time=ts,
+                        notice_type=nt_type,
+                    ))
+                self.logger.info(f"  公告 API 页 {page_num}: {len(items)} 条 (累计 {len(notices)} 条)")
+                if should_stop:
+                    break
+                if len(items) < 10:
+                    break
+                self.human_delay(0.5, 1.5)
+        except Exception as e:
+            self.logger.warning(f"API 爬取公告失败: {e}")
+        return notices
+
+    def _parse_items_with_pagination(self, page: Page, max_pages: int = 3,
+                                      target_count: int = 30) -> List:
+        items = []
+        # [Items] Initial fetch -- must run even when max_pages=0
+        try:
+            items = page.query_selector_all('.timeline__item')
+            self.logger.info(f"[Items] Initial fetch: {len(items)} items")
+        except Exception as e:
+            self.logger.warning(f"[Items] Initial fetch failed: {e}")
+
+        if max_pages <= 0:
+            return items
 
         for page_num in range(1, max_pages + 1):
             try:
-                # Scroll to load lazy images/etc.
-                page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                self.human_delay(0.5, 1)
-
-                # Parse current page items
-                items = page.query_selector_all('.timeline__item')
-                parsed_this_page = 0
-
-                for item in items:
-                    try:
-                        obj = parse_fn(item)
-                        if obj:
-                            # Dedup by content signature (first 50 chars)
-                            sig = (getattr(obj, 'content', '') or getattr(obj, 'title', ''))[:50]
-                            if sig and sig not in seen_content:
-                                seen_content.add(sig)
-                                result_list.append(obj)
-                                parsed_this_page += 1
-                    except Exception:
-                        pass
-
-                self.logger.info(f"分页 [{page_num}] 本页: {parsed_this_page} 条, 累计: {len(result_list)}")
-
-                # ── Time-based stop: check if any parsed item is from 'yesterday' or earlier ──
-                crossed_day = False
-                for obj in result_list[-parsed_this_page:] if parsed_this_page else []:
-                    t = getattr(obj, 'time', '')
-                    if not t:
-                        continue
-                    # Today indicators: X秒前, X分钟前, X小时前, 今天
-                    if re.search(r'(秒前|分钟前|小时前|今天)', t):
-                        continue
-                    # Yesterday or date patterns: 昨天, MM-DD, YYYY-MM-DD, HH:MM (no '前')
-                    if re.search(r'(昨天|\d{2}-\d{2}|\d{4}-\d{2}-\d{2})', t):
-                        crossed_day = True
-                        # Keep '昨天' items too (they may still be today's late posts)
-                        # Only stop if we see 2+昨天 items in the same page
-                        yesterday_count = sum(1 for o in result_list[-parsed_this_page:] 
-                                              if '昨天' in (getattr(o, 'time', '') or ''))
-                        if yesterday_count >= 3:
-                            self.logger.info(f"  时间已跨到昨天({yesterday_count}条), 停止")
-                            return
-
-                # Stop conditions
-                if len(result_list) >= target_count:
-                    self.logger.info(f"  已达标 {target_count} 条, 停止")
+                new_items = page.query_selector_all('.timeline__item')
+                new_count = len(new_items) - len(items)
+                self.logger.info(f"分页 [{page_num}/{max_pages}] 本页新增: {max(new_count, 0)}, 累计: {len(new_items)} 条")
+                items = new_items  # DOM已刷新，new_items就是最新全量
+                if len(items) >= target_count:
                     break
-                if parsed_this_page == 0:
-                    stale_pages += 1
-                else:
-                    stale_pages = 0
-                if stale_pages >= 3:
-                    self.logger.info(f"  连续 {stale_pages} 页无新数据, 停止")
-                    break
-
-                # Navigate to next page
+                # 点击"更多"
                 clicked = page.evaluate('''() => {
-                    const all = document.querySelectorAll('a, button, div, span');
-                    for (const btn of all) {
-                        const text = (btn.innerText || '').trim();
-                        if (text === '下一页') {
+                    const btns = document.querySelectorAll('button, a, div');
+                    for (const btn of btns) {
+                        const text = btn.innerText.trim();
+                        if (text === '更多' || text === '加载更多' || text.includes('查看更多')) {
                             btn.click();
                             return true;
                         }
                     }
                     return false;
                 }''')
-
                 if clicked:
                     self.human_delay(1.5, 3)
-                else:
-                    self.logger.info(f"  未找到'下一页', 停止")
-                    break
+                    try:
+                        page.wait_for_selector('.timeline__item', timeout=5000)
+                    except Exception:
+                        pass
+            except Exception as e:
+                self.logger.warning(f"分页 [{page_num}] 异常: {e}")
 
-            except Exception:
-                pass
-
-    def _parse_items_with_pagination(self, page: Page, max_pages: int = 10,
-                                      target_count: int = 100) -> List:
-        """Deprecated: use _crawl_items_with_pagination instead."""
-        return page.query_selector_all('.timeline__item')
+        return items
 
     def _parse_single_discussion(self, item) -> Optional[Discussion]:
-        """Parse discussion item from timeline DOM element.
-
-        Uses JS evaluate() for structured extraction instead of regex on inner_text().
-        Extracts: author, time, heading(column title), content, interactions, link.
-        """
         try:
-            # Structured extraction via JS (evaluate on the element handle)
-            data = item.evaluate('''(el) => {
-                const result = {author: '', time: '', title: '', content: '',
-                                link: '', comments: 0, likes: 0, forwards: 0};
+            text = item.inner_text().strip()
+            author_match = re.search(r'^([^\d]+?)(?=\d+小时|\d+天|昨天|今天|\d{4}|\d{2}:\d{2}|\d+秒|\d+分钟)', text)
+            author = author_match.group(1).strip()[:30] if author_match else ''
+            time_match = re.search(r'(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天|\d{2}:\d{2}|\d{4}-\d{2}-\d{2})', text)
+            time_str = time_match.group(1) if time_match else ''
+            content = re.sub(r'^[^\d]+?(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天)[^\n]*', '', text)
+            content = re.sub(r'展开.*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'转发.*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'赞.*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'收藏.*$', '', content, flags=re.MULTILINE)
+            content = content.strip()[:500]
 
-                // 1) Author: first <a> that is NOT a stock symbol ($xxx), NOT a time string
-                const links = el.querySelectorAll('a');
-                for (const a of links) {
-                    const txt = a.innerText.trim();
-                    if (!txt) continue;
-                    // Skip stock symbols, time strings, icon-only, interaction numbers
-                    if (/^[$＄]/.test(txt)) continue;
-                    if (/(分钟前|小时前|天前|昨天|今天|来自|修改于)/.test(txt)) continue;
-                    if (/^[\\ue000-\\uf8ff]+$/.test(txt)) continue;
-                    if (/^(收起|展开|转发|讨论|赞|收藏|分享).*$/.test(txt)) continue;
-                    if (/^\\d+$/.test(txt)) continue;
-                    // First valid-looking username (no spaces, < 30 chars)
-                    if (txt.length >= 2 && txt.length < 30) {
-                        result.author = txt;
-                        break;
-                    }
-                }
+            # 检测专栏：来源=雪球（平台发布的专栏文章）
+            is_column = '来自雪球' in text
 
-                // 2) Time: from any link containing time pattern
-                for (const a of links) {
-                    const txt = a.innerText.trim();
-                    if (/(\\d+秒前|\\d+分钟前|\\d+小时前|\\d+天前|昨天|今天|修改于|来自)/.test(txt)) {
-                        const m = txt.match(/(\\d+秒前|\\d+分钟前|\\d+小时前|\\d+天前|昨天|今天|修改于\\d+.*?前|[0-9]{2}:[0-9]{2})/);
-                        result.time = m ? m[1] : txt.slice(0, 20);
-                        break;
-                    }
-                }
+            link = ''
+            for link_elem in item.query_selector_all('a'):
+                href = link_elem.get_attribute('href') or ''
+                if re.match(r'/\d+/\d+$', href):
+                    link = 'https://xueqiu.com' + href
+                    break
 
-                // 3) Column article title: h3 or heading element
-                const h = el.querySelector('h3, h2, [class*="title"]');
-                if (h && !/(收起|展开)/.test(h.innerText)) {
-                    result.title = h.innerText.trim();
-                }
-
-                // 4) Content: the article body, excluding chrome
-                const bodySelectors = [
-                    '.article__bd__detail',
-                    '.detail-body',
-                    '[class*="content"]:not([class*="title"])',
-                ];
-                let body = '';
-                for (const sel of bodySelectors) {
-                    const b = el.querySelector(sel);
-                    if (b && b.innerText.trim().length > 20) {
-                        body = b.innerText.trim();
-                        break;
-                    }
-                }
-
-                // Fallback: use inner_text minus chrome
-                if (!body) {
-                    body = el.innerText;
-                    // Remove author line
-                    if (result.author) {
-                        body = body.replace(new RegExp(result.author + '[\\s\\S]*?(分钟前|小时前|天前|来自)', 'm'), '');
-                    }
-                    // Remove quote/collapse headers
-                    body = body.replace(/^收起\\s*\\n/gm, '');
-                    body = body.replace(/^展开\\s*\\n/gm, '');
-                    // Remove interaction row
-                    body = body.replace(/[\\ue000-\\uf8ff]\\s*(转发|讨论|赞|收藏)\\s*\\d*/g, '');
-                    body = body.replace(/分享\\s*\\n/g, '');
-                    body = body.trim();
-                }
-
-                result.content = body.slice(0, 2000);
-
-                // 5) Link: article detail URL
-                for (const a of links) {
-                    const href = a.getAttribute('href') || '';
-                    if (/\\/\\d+\\/\\d+$/.test(href)) {
-                        result.link = 'https://xueqiu.com' + href;
-                        break;
-                    }
-                }
-
-                // 6) Interactions: from the row with icon + count
-                const text = el.innerText;
-                let m = text.match(/讨论\\s*(\\d+)/);
-                if (m) result.comments = parseInt(m[1]);
-                m = text.match(/赞\\s*(\\d+)/);
-                if (m) result.likes = parseInt(m[1]);
-                m = text.match(/转发\\s*(\\d+)/);
-                if (m) result.forwards = parseInt(m[1]);
-
-                return result;
-            }''')
-
-            content = (data.get('content') or '').strip()
-            if len(content) < 5:
-                return None
-
-            # If there's a column title, prepend it
-            if data.get('title') and '专栏' in data['title']:
-                content = f"【{data['title']}】\n{content}"
-
-            return Discussion(
-                author=data.get('author', ''),
-                content=content,
-                time=data.get('time', ''),
-                link=data.get('link', ''),
-                comment_count=data.get('comments', 0),
-                forward_count=data.get('forwards', 0),
-                like_count=data.get('likes', 0),
-            )
+            if content and len(content) > 10:
+                return Discussion(author=author, content=content,
+                                  time=time_str, link=link, is_column=is_column)
         except Exception:
             pass
         return None
@@ -836,189 +830,231 @@ class XueqiuCrawler:
             pass
         return None
 
-    def _parse_single_notice(self, item) -> Optional[Notice]:
-        """Parse a single notice from timeline DOM element."""
+    def _parse_notices(self, page: Page) -> List[Notice]:
+        notices = []
         try:
-            text = item.inner_text().strip()
-            if not text:
+            time.sleep(1)
+            items = page.evaluate('''() => {
+                const items = [];
+                const timelineItems = document.querySelectorAll('.timeline__item');
+                for (const item of timelineItems) {
+                    const text = item.innerText || '';
+                    const links = item.querySelectorAll('a');
+                    let link = '';
+                    for (const a of links) {
+                        const href = a.getAttribute('href') || '';
+                        if (href && !href.startsWith('javascript')) {
+                            link = href.startsWith('http') ? href : 'https://xueqiu.com' + href;
+                        }
+                    }
+                    if (text.trim()) items.push({ title: text.trim().substring(0, 200), link: link });
+                }
+                return items;
+            }''')
+
+            for item_data in items:
+                notice = Notice(
+                    title=item_data.get('title', ''),
+                    link=item_data.get('link', ''),
+                )
+                # 提取时间
+                time_match = re.search(r'(\d+分钟前|\d+小时前|\d+天前|昨天|今天|\d{2}:\d{2}|\d{4}-\d{2}-\d{2}|\d{2}-\d{2}\s+\d{2}:\d{2})', notice.title)
+                if time_match:
+                    notice.time = time_match.group(1)
+                # 提取公告类型
+                type_match = re.search(r'\[(.+?)\]', notice.title)
+                if type_match:
+                    notice.notice_type = type_match.group(1)
+                notices.append(notice)
+
+            self.logger.info(f"解析公告: 找到 {len(notices)} 条")
+        except Exception as e:
+            self.logger.warning(f"解析公告失败: {e}")
+        return notices
+
+    def _crawl_news_detail(self, browser, url: str) -> Optional[dict]:
+        """爬取新闻/资讯详情页正文
+
+        URL 格式: https://xueqiu.com/talks/item/{id}
+        与文章详情页结构相同，可复用 CSS selector 逻辑。
+        """
+        try:
+            page = browser.new_page()
+            page.goto(url, timeout=self.timeout)
+            self.human_delay(2, 4)
+            self._close_modal(page)
+
+            title = page.evaluate('''() => {
+                const el = document.querySelector('.article__bd__title, h1.title, .news-title');
+                return el ? el.innerText.trim() : document.title;
+            }''')
+            content = page.evaluate('''() => {
+                const selectors = [
+                    '.article__bd__detail',
+                    '.article-content',
+                    '.news-content',
+                    '[class*="article-detail"]',
+                    '[class*="detail_body"]',
+                    '.stock-news-content',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.innerText.trim().length > 20) {
+                        return el.innerText.trim();
+                    }
+                }
+                // fallback: 最长段落
+                const paras = document.querySelectorAll('p, div.article-text');
+                let best = '';
+                for (const p of paras) {
+                    const t = p.innerText.trim();
+                    if (t.length > best.length) best = t;
+                }
+                return best;
+            }''')
+            page.close()
+            return {'title': title, 'content': content} if content else None
+        except Exception as e:
+            self.logger.warning(f"资讯详情爬取失败 {url}: {e}")
+            try:
+                page.close()
+            except Exception:
+                pass
+            return None
+
+
+    def _crawl_notice_pdf_text(self, url: str) -> Optional[str]:
+            """下载雪球公告 PDF 并提取正文文本
+    
+            优先用 pymupdf(fitz)，若提取文字 <200 字则尝试 pdfplumber 回退。
+            """
+            import urllib.request, io
+    
+            # 下载 PDF
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                        'Referer': 'https://xueqiu.com/',
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    pdf_data = resp.read()
+            except Exception as e:
+                self.logger.warning(f"公告 PDF 下载失败 {url}: {e}")
                 return None
+    
+            full_text = None
+    
+            # Method 1: fitz
+            if fitz:
+                try:
+                    doc = fitz.open(stream=pdf_data, filetype='pdf')
+                    texts = []
+                    for page in doc:
+                        text = page.get_text()
+                        if text.strip():
+                            texts.append(text.strip())
+                    doc.close()
+                    full_text = '\n'.join(texts)
+                    self.logger.debug(f"fitz 提取: {len(full_text)} 字")
+                    if len(full_text) < 200:
+                        self.logger.debug(f"  fitz 提取过短({len(full_text)}字)，尝试 pdfplumber")
+                        full_text = None  # trigger fallback
+                except Exception as e:
+                    self.logger.debug(f"fitz 解析异常: {e}")
+                    full_text = None
+    
+            # Method 2: pdfplumber fallback
+            if not full_text:
+                try:
+                    import pdfplumber
+                    with pdfplumber.open(io.BytesIO(pdf_data)) as pdf:
+                        texts = []
+                        for page in pdf.pages:
+                            t = page.extract_text()
+                            if t and t.strip():
+                                texts.append(t.strip())
+                    full_text = '\n'.join(texts)
+                    self.logger.debug(f"pdfplumber 提取: {len(full_text)} 字")
+                except ImportError:
+                    self.logger.debug("pdfplumber 未安装")
+                except Exception as e:
+                    self.logger.debug(f"pdfplumber 解析异常: {e}")
+    
+            if not full_text or not full_text.strip():
+                return None
+    
+            # 截断超长内容
+            if len(full_text) > 8000:
+                full_text = full_text[:8000] + '\n[...PDF正文已截断...]'
+            return full_text
+    def _crawl_article_detail(self, page: Page, url: str) -> Optional[Article]:
+        """爬取雪球文章详情
 
-            # Get link
-            link = ''
-            links = item.query_selector_all('a')
-            for a in links:
-                href = a.get_attribute('href') or ''
-                if href and not href.startswith('javascript'):
-                    link = 'https://xueqiu.com' + href if href.startswith('/') else href
-                    break
-
-            # Clean title
-            clean_title = re.sub(r'[\ue000-\uf8ff\u2000-\u206f]', '', text).strip()[:200]
-
-            notice = Notice(
-                title=clean_title,
-                link=link,
-            )
-
-            # Extract time
-            time_match = re.search(r'(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天|\d{2}:\d{2}|\d{4}-\d{2}-\d{2}|\d{2}-\d{2}\s+\d{2}:\d{2})', clean_title)
-            if time_match:
-                notice.time = time_match.group(1)
-
-            # Extract notice type
-            type_match = re.search(r'\[(.+?)\]', clean_title)
-            if type_match:
-                notice.notice_type = type_match.group(1)
-            else:
-                notice.notice_type = _detect_notice_type(clean_title)
-
-            return notice
-        except Exception:
-            pass
-        return None
-
-
-# ── Notice type detection ────────────────────────────────────
-
-_NOTICE_TYPE_A = re.compile(
-    r'关于(.+?)(?:的|之)(公告|通知|决议|报告|议案|说明|提示|批复|意见)'
-)
-_NOTICE_TYPE_SEC = re.compile(
-    r'(?:Statement|Report)\s+(?:of|on)\s+(.+?)(?:\s+Accession|\s+Size|$)',
-    re.IGNORECASE
-)
-_NOTICE_TYPE_SEC_FORM = re.compile(
-    r'(Form\s+[\d\-A-Z]+)', re.IGNORECASE
-)
-
-
-def _detect_notice_type(title: str) -> str:
-    """Detect notice type from title when bracket format [type] is absent.
-
-    Covers A-share (\"关于...的公告\") and SEC filing (\"Statement of...\") formats.
-    """
-    # A-share: 关于聘任董事会秘书的公告 → "聘任董事会秘书公告"
-    m = _NOTICE_TYPE_A.search(title)
-    if m:
-        return f'{m.group(1).strip()}{m.group(2)}'[:60]
-
-    # SEC: "Statement of changes in beneficial ownership"
-    m = _NOTICE_TYPE_SEC.search(title)
-    if m:
-        return f'SEC: {m.group(1).strip()}'[:60]
-
-    # SEC Form: "Form 4", "Form 144"
-    m = _NOTICE_TYPE_SEC_FORM.search(title)
-    if m:
-        return m.group(1)[:60]
-
-    return ''
-
-
-    def _crawl_discussion_detail(self, page: Page, url: str) -> Optional[dict]:
-        """Crawl discussion/article detail page to enrich discussion data.
-        
-        Extracts:
-          - title: column article title (h1 or .article__bd__title)
-          - full_content: full article body (not truncated to 500 chars)
-          - comments: list of comment texts
+        优先使用 ScrapingExtractor（DeepSeek LLM）提取正文，
+        失败时回退到原有 CSS selector 逻辑。
         """
         try:
             detail_page = page.context.new_page()
             detail_page.goto(url, timeout=30000)
-            try:
-                detail_page.wait_for_load_state('networkidle', timeout=10000)
-            except Exception:
-                pass
-            time.sleep(3)
+            time.sleep(2)
             self._close_modal(detail_page)
-            time.sleep(1)  # let page settle after modal close
 
-            # Title: column article heading
+            # ── Phase 1: DeepSeek LLM 提取 ───────────────────────────
+            raw_html = detail_page.content()
+            result = self.extractor.extract(url, raw_html=raw_html)
+
+            if result.is_valid():
+                # 解析 symbols（可能是 JSON 字符串或列表）
+                import json as _json
+                try:
+                    symbols = _json.loads(result.symbols) if isinstance(result.symbols, str) else result.symbols
+                    if not isinstance(symbols, list):
+                        symbols = []
+                except Exception:
+                    symbols = []
+                article_id = url.rstrip('/').split('/')[-1] if '/' in url else ''
+                detail_page.close()
+                return Article(
+                    title=result.title[:200] if result.title else '',
+                    author=result.author,
+                    content=result.content[:10000],
+                    time=result.time,
+                    link=url,
+                    article_id=article_id,
+                )
+
+            # ── Phase 2: Fallback 原有 CSS selector ──────────────────
             title = detail_page.evaluate('''() => {
-                const selectors = [
-                    '.article__bd__title',
-                    'h1.article__title',
-                    '.article-title',
-                    '.kb-article-title',
-                    '[class*="article-title"]',
-                    '[class*="article__title"]',
-                    'h1',
-                ];
-                for (const sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el && el.innerText.trim().length > 2) {
-                        return el.innerText.trim();
-                    }
-                }
-                const og = document.querySelector('meta[property="og:title"]');
-                if (og) return og.getAttribute('content').trim();
-                return '';
+                const h1 = document.querySelector('.article__bd__title');
+                return h1 ? h1.innerText.trim() : document.title;
             }''')
-
-            # Full content — try multiple selectors, fallback to body
-            full_content = detail_page.evaluate('''() => {
-                const selectors = [
-                    '.article__bd__detail',
-                    '.detail-content',
-                    '.article-content',
-                    '[class*="article-detail"]',
-                    '[class*="detail_body"]',
-                    '[class*="kb-article"]',
-                    '[class*="article-body"]',
-                    '[class*="article__bd"]',
-                ];
-                for (const sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el && el.innerText.trim().length > 50) {
-                        return el.innerText.trim();
-                    }
-                }
-                // Last resort: body text (strip nav/footer noise)
-                const body = document.body;
-                if (body && body.innerText.trim().length > 100) {
-                    return body.innerText.trim();
-                }
-                return '';
+            author = detail_page.evaluate('''() => {
+                const el = document.querySelector('.article__bd__from a, .user-name, [class*="author"]');
+                return el ? el.innerText.trim() : '';
             }''')
-
-            # Comments: extract from comment section
-            comments = detail_page.evaluate('''() => {
-                const results = [];
-                const selectors = [
-                    '.comment-item',
-                    '.comment__item',
-                    '[class*="comment-item"]',
-                    '.reply-item',
-                ];
-                for (const sel of selectors) {
-                    const items = document.querySelectorAll(sel);
-                    for (const item of items) {
-                        const text = item.innerText.trim();
-                        if (text && text.length > 5 && text.length < 2000) {
-                            results.push(text);
-                        }
-                    }
-                    if (results.length > 0) break;
-                }
-                return results.slice(0, 30);  // limit to 30 most recent
+            time_str = detail_page.evaluate('''() => {
+                const el = document.querySelector('.article__bd__time, [class*="date"], time');
+                return el ? el.innerText.trim() : '';
             }''')
-
+            content = detail_page.evaluate('''() => {
+                const article = document.querySelector('.article__bd__detail');
+                return article ? article.innerText.trim() : '';
+            }''')
             detail_page.close()
 
-            # Filter out disclaimer content
-            if full_content and _is_disclaimer(full_content):
-                full_content = ''
-
-            detail = {}
-            if title and len(title) > 3:
-                detail['title'] = title[:200]
-            if full_content and len(full_content) > 50:
-                detail['full_content'] = full_content[:5000]
-            if comments:
-                detail['comments'] = comments
-
-            return detail if detail else None
+            if content and len(content) > 50:
+                article_id = url.rstrip('/').split('/')[-1] if '/' in url else ''
+                return Article(
+                    title=title[:200],
+                    author=author,
+                    content=content[:10000],
+                    time=time_str,
+                    link=url,
+                    article_id=article_id,
+                )
         except Exception:
             try:
                 detail_page.close()
@@ -1094,6 +1130,89 @@ def _detect_notice_type(title: str) -> str:
                 pass
         return None
 
+    # ========== DOM Fallback 方法（API 失败时使用） ==========
+
+    def _crawl_items_with_pagination(self, page, parse_fn, result_list,
+                                       max_pages=100, target_count=1000):
+        """Navigate pages, parse items, accumulate into result_list.
+
+        Time-aware stop: when items start showing yesterday's date patterns.
+        """
+        seen_content = set()
+        stale_pages = 0
+
+        for page_num in range(1, max_pages + 1):
+            try:
+                page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                self.human_delay(0.5, 1)
+
+                items = page.query_selector_all('.timeline__item')
+                parsed = 0
+
+                for item in items:
+                    try:
+                        obj = parse_fn(item)
+                        if obj:
+                            sig = (getattr(obj, 'content', '') or getattr(obj, 'title', ''))[:50]
+                            if sig and sig not in seen_content:
+                                seen_content.add(sig)
+                                result_list.append(obj)
+                                parsed += 1
+                    except Exception:
+                        pass
+
+                self.logger.info(f"[DOM] 分页 [{page_num}] 本页: {parsed}, 累计: {len(result_list)}")
+
+                if len(result_list) >= target_count:
+                    break
+                if parsed == 0:
+                    stale_pages += 1
+                else:
+                    stale_pages = 0
+                if stale_pages >= 3:
+                    break
+
+                clicked = page.evaluate('''() => {
+                    const all = document.querySelectorAll('a, button, div, span');
+                    for (const btn of all) {
+                        if ((btn.innerText || '').trim() === '下一页') {
+                            btn.click(); return true;
+                        }
+                    }
+                    return false;
+                }''')
+                if clicked:
+                    self.human_delay(1.5, 3)
+                else:
+                    break
+            except Exception:
+                pass
+
+    def _parse_single_notice(self, item) -> Optional[Notice]:
+        """Parse notice from DOM element (API fallback)."""
+        try:
+            text = item.inner_text().strip()
+            if not text:
+                return None
+            link = ''
+            for a in (item.query_selector_all('a') or []):
+                href = a.get_attribute('href') or ''
+                if href and not href.startswith('javascript'):
+                    link = 'https://xueqiu.com' + href if href.startswith('/') else href
+                    break
+            clean_title = re.sub(r'[\ue000-\uf8ff\u2000-\u206f]', '', text).strip()[:200]
+            notice = Notice(title=clean_title, link=link)
+            time_match = re.search(
+                r'(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天|\d{2}:\d{2}|\d{4}-\d{2}-\d{2})',
+                clean_title)
+            if time_match:
+                notice.time = time_match.group(1)
+            type_match = re.search(r'\[(.+?)\]', clean_title)
+            notice.notice_type = type_match.group(1) if type_match else ''
+            return notice
+        except Exception:
+            return None
+
     # ========== 序列化 ==========
 
     def save(self, result: CrawlResult, path: str):
@@ -1109,3 +1228,56 @@ def _detect_notice_type(title: str) -> str:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return CrawlResult.from_dict(data)
+
+
+# ── Notice type detection ────────────────────────────────────
+
+_NOTICE_TYPE_A = re.compile(
+    r'关于(.+?)(?:的|之)(公告|通知|决议|报告|议案|说明|提示|批复|意见)'
+)
+_NOTICE_TYPE_A2 = re.compile(
+    r'(?:贵州茅台：\s*)?(?:'
+    r'(独立董事提名人声明与承诺)|'
+    r'(独立董事候选人声明与承诺)(?:[（(].*?[)）])?|'
+    r'(第.+?次会议决议公告)|'
+    r'(主要经营数据公告)|'
+    r'(\d{4}年度审计报告)|'
+    r'(\d{4}年度内部.*?审计报告)|'
+    r'(\d{4}年度独立董事述职报告)(?:[（(].*?[)）])?|'
+    r'(\d{4}年第一季度报告)|'
+    r'(\d{4}年度财务报告)|'
+    r'(董事会工作报告)|'
+    r'(监事会工作报告)'
+    r')',
+)
+_NOTICE_TYPE_SEC = re.compile(
+    r'(?:Statement|Report)\s+(?:of|on)\s+(.+?)(?:\s+Accession|\s+Size|$)',
+    re.IGNORECASE
+)
+_NOTICE_TYPE_SEC_FORM = re.compile(
+    r'(Form\s+[\d\-A-Z]+)', re.IGNORECASE
+)
+
+
+def _detect_notice_type(title: str) -> str:
+    """Detect notice type from title when bracket format [type] is absent.
+
+    Covers A-share (\"关于...的公告\") and SEC filing (\"Statement of...\") formats.
+    """
+    m = _NOTICE_TYPE_A.search(title)
+    if m:
+        return f'{m.group(1).strip()}{m.group(2)}'[:60]
+
+    # A-share fallback: titles without "关于" prefix
+    # e.g., "独立董事提名人声明与承诺" → "独立董事提名人声明"
+    m = _NOTICE_TYPE_A2.search(title)
+    if m:
+        return f'{m.group(1).strip()}'[:60]
+
+    m = _NOTICE_TYPE_SEC.search(title)
+    if m:
+        return f'SEC: {m.group(1).strip()}'[:60]
+    m = _NOTICE_TYPE_SEC_FORM.search(title)
+    if m:
+        return m.group(1)[:60]
+    return ''

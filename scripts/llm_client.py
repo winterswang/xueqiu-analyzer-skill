@@ -18,6 +18,16 @@
 import os
 import json
 import logging
+
+# 自动加载项目 .env（不依赖 bash 环境）
+try:
+    from dotenv import load_dotenv
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _dotenv_path = os.path.join(_project_root, '.env')
+    if os.path.exists(_dotenv_path):
+        load_dotenv(_dotenv_path, override=False)
+except ImportError:
+    pass
 import urllib.request
 import urllib.error
 from typing import Optional

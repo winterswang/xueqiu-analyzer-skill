@@ -8,7 +8,7 @@ import json
 import logging
 import urllib.request
 import urllib.error
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .config import get_llm_config
 
