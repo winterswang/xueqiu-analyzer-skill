@@ -83,7 +83,8 @@ def analyze(symbol, max_rounds, data, template):
 @click.option('--max-pages', default=5, help='最大翻页数')
 @click.option('--max-articles', default=10, help='最大文章数')
 @click.option('--days', default=0, help='只看最近 N 天（0=不限）')
-def crawl(symbol, output, max_pages, max_articles, days):
+@click.option('--max-items', default=0, help='最大总内容条数（0=不限）')
+def crawl(symbol, output, max_pages, max_articles, days, max_items):
     """只爬取数据，保存为 JSON"""
     try:
         from xueqiu_analyzer.crawler import XueqiuCrawler
@@ -96,7 +97,8 @@ def crawl(symbol, output, max_pages, max_articles, days):
 
     click.echo(f"开始爬取: {symbol}")
     result = crawler.crawl(symbol, max_pages=max_pages,
-                           max_articles=max_articles, days=days)
+                           max_articles=max_articles, days=days,
+                           max_items=max_items)
 
     # 保存
     if output:
@@ -174,12 +176,16 @@ def reanalyze(data, template):
 @cli.command()
 @click.argument('symbol')
 @click.option('--output-dir', '-o', default=None, help='输出目录（默认 ~/.xueqiu_stocks/{SYMBOL}/{timestamp}/）')
-@click.option('--max-pages', default=10, help='最大分页数（10页×20条=200条）')
-@click.option('--days', default=0, help='只看最近 N 天的数据（0=不限）')
+@click.option('--max-pages', default=10, help='最大分页数（硬上限兜底）')
+@click.option('--days', default=0, help='时间窗口（天，0=不限）')
+@click.option('--max-items', default=0, help='最大总内容条数（0=不限）')
 @click.option('--max-articles', default=10, help='最大专栏文章详情数')
 @click.option('--max-news', default=10, help='最大新闻正文爬取数（0=只爬标题）')
 @click.option('--max-notices', default=10, help='最大公告正文爬取数（0=只爬标题）')
-def deep_analyze(symbol, output_dir, max_pages, days, max_articles, max_news, max_notices):
+@click.option('--auto', is_flag=True, help='质量驱动模式：迭代爬取直到评分达标')
+@click.option('--quality-score', default=150, help='auto 模式评分阈值')
+def deep_analyze(symbol, output_dir, max_pages, days, max_items,
+                 max_articles, max_news, max_notices, auto, quality_score):
     """深度舆情分析：爬取 → 本地存储 → DeepSeek 分析 → Markdown 报告
 
     数据规模参考：
@@ -205,7 +211,8 @@ def deep_analyze(symbol, output_dir, max_pages, days, max_articles, max_news, ma
         storage_dir = Path('~/.xueqiu_stocks').expanduser()
 
     click.echo(f"📊 开始深度分析: {symbol}")
-    click.echo(f"   max_pages={max_pages}, days={days}, max_articles={max_articles}")
+    mode_info = f"auto={auto}" if auto else f"max_pages={max_pages}"
+    click.echo(f"   {mode_info}, days={days}, max_items={max_items}, max_articles={max_articles}")
     click.echo(f"   输出目录: {storage_dir}")
     click.echo()
 
@@ -217,9 +224,12 @@ def deep_analyze(symbol, output_dir, max_pages, days, max_articles, max_news, ma
         symbol=symbol.upper(),
         max_pages=max_pages,
         days=days,
+        max_items=max_items,
         max_articles=max_articles,
         max_news=max_news,
         max_notices=max_notices,
+        auto=auto,
+        quality_score=quality_score,
     )
     t1 = time.time()
 
