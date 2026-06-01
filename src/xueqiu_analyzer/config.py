@@ -59,6 +59,7 @@ def _load_openclaw_provider() -> Optional[Dict]:
                     'models': [m.get('id', '') for m in provider.get('models', [])],
                 }
     except Exception:
+        # openclaw.json 不可用或格式错误，使用 config.yaml + 环境变量即可
         pass
     return None
 
