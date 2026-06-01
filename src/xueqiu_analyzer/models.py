@@ -326,6 +326,9 @@ class BatchGraderResult:
     def high_quality_items(self) -> list:
         return [i for i in self.items if i.is_high_quality]
 
+    def filter_by_threshold(self, threshold: int) -> list:
+        return [i for i in self.items if i.combined >= threshold]
+
     @property
     def quality_count(self) -> int:
         return len(self.high_quality_items)
