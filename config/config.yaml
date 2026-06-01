@@ -43,3 +43,8 @@ analysis:
 notify:
   gist: false
   feishu: false
+
+# 内容分级配置 (ContentGrader)
+grader:
+  enabled: true
+  threshold: 10  # combined ≥ 10 入选高质量
