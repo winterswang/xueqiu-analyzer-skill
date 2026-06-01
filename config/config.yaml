@@ -1,10 +1,10 @@
 # 雪球分析 Skill V3 配置
 
-# LLM API 配置（通过 Ark/方舟调用 DeepSeek）
+# LLM API 配置
 llm:
-  base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
-  model: "deepseek-v3.2"
-  api_key: "${ARK_API_KEY}"
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  api_key: "${DEEPSEEK_API_KEY}"
   max_tokens: 32000
   temperature: 0.3
 
