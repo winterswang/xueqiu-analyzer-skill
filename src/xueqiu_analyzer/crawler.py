@@ -79,6 +79,26 @@ def _is_disclaimer(text: str) -> bool:
     return False
 
 
+def _is_beyond_time_window(time_str: str, days: int) -> bool:
+    """Check if a DOM time string is beyond the given day window.
+
+    Handles formats like: '05-31 10:10', '06-01', '05-31', '2026-05-31'
+    Returns True if the date is more than `days` in the past.
+    """
+    if not time_str or days <= 0:
+        return False
+    cutoff = datetime.now().timestamp() - days * 86400
+    for fmt in ['%m-%d %H:%M', '%m-%d', '%Y-%m-%d', '%Y-%m-%d %H:%M']:
+        try:
+            dt = datetime.strptime(time_str.strip(), fmt)
+            if '%Y' not in fmt:
+                dt = dt.replace(year=datetime.now().year)
+            return dt.timestamp() < cutoff
+        except ValueError:
+            continue
+    return False
+
+
 class XueqiuCrawler:
     """雪球数据爬虫 — 只管爬，输出标准 CrawlResult"""
 
@@ -99,23 +119,31 @@ class XueqiuCrawler:
               max_articles: int = 10,
               days: int = 0,
               max_news: int = 20,
-              max_notices: int = 20) -> CrawlResult:
+              max_notices: int = 20,
+              max_items: int = 0) -> CrawlResult:
         """
         爬取股票详情页数据
 
         Args:
             symbol: 股票代码
-            max_pages: 最大分页数
+            max_pages: 最大分页数（硬上限兜底）
             max_articles: 最大文章数
             days: 时间过滤（0=不限，N=只看最近 N 天）
             max_news: 最大爬取新闻正文数（0=只爬标题）
             max_notices: 最大爬取公告正文数（PDF解析）
+            max_items: 最大总内容条数（0=不限，讨论+资讯+公告+专栏合计）
 
         Returns:
             CrawlResult
         """
         self.logger.info(f"开始爬取股票: {symbol}")
         result = CrawlResult(symbol=symbol)
+
+        def _total_items() -> int:
+            return len(result.discussions) + len(result.news) + len(result.notices) + len(result.articles)
+
+        def _items_limit_reached() -> bool:
+            return max_items > 0 and _total_items() >= max_items
 
         with sync_playwright() as p:
             browser, context = self._create_browser_context(p)
@@ -179,7 +207,8 @@ class XueqiuCrawler:
                 # ========== 爬取讨论 ==========
                 self.logger.info("=== 爬取讨论 (API) ===")
                 api_discs = self._crawl_discussions_via_api(
-                    symbol, max_pages=max_pages, per_page=50, days=days)
+                    symbol, max_pages=max_pages, per_page=50, days=days,
+                    max_items=max_items, total_items_fn=_total_items)
                 for disc in api_discs:
                     if disc.is_column and disc.link:
                         result.articles.append(Article(
@@ -193,6 +222,10 @@ class XueqiuCrawler:
                     else:
                         result.discussions.append(disc)
                 self.logger.info(f"API 获取 {len(result.discussions)} 条讨论（含 {sum(1 for d in result.discussions if d.is_column)} 专栏）")
+                if _items_limit_reached():
+                    self.logger.info(f"⏹ 总条数已达上限 ({max_items})，停止爬取")
+                    self._save_cookies(context)
+                    return result
 
                 # ── DOM Fallback: API 数据不足时用 Playwright 补充 ──
                 if len(api_discs) < 3:
@@ -201,7 +234,8 @@ class XueqiuCrawler:
                         self.human_delay(1, 2)
                         self._crawl_items_with_pagination(
                             page, self._parse_single_discussion,
-                            result.discussions, max_pages=max_pages, target_count=5000)
+                            result.discussions, max_pages=max_pages, target_count=5000,
+                            max_items=max_items, total_items_fn=_total_items)
                     # DOM 路径专栏分离: 【专栏 前缀匹配
                     true_discs = []
                     for d in result.discussions:
@@ -223,12 +257,16 @@ class XueqiuCrawler:
 
                 # ========== 爬取资讯 ==========
                 self.logger.info("=== 爬取资讯 (Playwright DOM) ===")
-                # interview/search.json 是雪球访谈接口，非实时新闻，直接走 DOM
                 if self._switch_tab(page, '资讯'):
                     self._crawl_items_with_pagination(
                         page, self._parse_single_news,
-                        result.news, max_pages=max_pages, target_count=5000)
+                        result.news, max_pages=max_pages, target_count=5000,
+                        max_items=max_items, total_items_fn=_total_items)
                 self.logger.info(f"获取 {len(result.news)} 条资讯")
+                if _items_limit_reached():
+                    self.logger.info(f"⏹ 总条数已达上限 ({max_items})，停止爬取")
+                    self._save_cookies(context)
+                    return result
 
                 # ========== 爬取资讯详情（正文） ==========
                 if max_news > 0:
@@ -245,7 +283,9 @@ class XueqiuCrawler:
 
                 # ========== 爬取公告 ==========
                 self.logger.info("=== 爬取公告 (API) ===")
-                result.notices = self._crawl_notices_via_api(symbol, max_pages=max_pages, days=days)
+                result.notices = self._crawl_notices_via_api(
+                    symbol, max_pages=max_pages, days=days,
+                    max_items=max_items, total_items_fn=_total_items)
                 self.logger.info(f"API 获取 {len(result.notices)} 条公告")
 
                 # ── DOM Fallback ──
@@ -261,6 +301,11 @@ class XueqiuCrawler:
                             except Exception:
                                 pass
                     self.logger.info(f"DOM 补充: {len(result.notices)} 条公告")
+
+                if _items_limit_reached():
+                    self.logger.info(f"⏹ 总条数已达上限 ({max_items})，停止爬取")
+                    self._save_cookies(context)
+                    return result
 
                 # ========== 爬取公告正文（PDF） ==========
                 if max_notices > 0:
@@ -525,7 +570,9 @@ class XueqiuCrawler:
 
     def _crawl_discussions_via_api(self, symbol: str, max_pages: int = 10,
                                     per_page: int = 50,
-                                    days: int = 0) -> List[Discussion]:
+                                    days: int = 0,
+                                    max_items: int = 0,
+                                    total_items_fn=None) -> List[Discussion]:
         """通过雪球官方 API 爬取讨论（支持真正的分页翻页）。
 
         API: GET https://xueqiu.com/query/v1/symbol/search/status.json
@@ -536,6 +583,8 @@ class XueqiuCrawler:
             max_pages: 最大分页数
             per_page: 每页条数（API 固定返回 20 条）
             days: 时间过滤（0=不限，N=只看最近 N 天）
+            max_items: 全局总条数上限（0=不限）
+            total_items_fn: 返回当前总数（讨论+资讯+公告+专栏）的回调
         """
         discussions = []
         time_cutoff = 0
@@ -609,6 +658,11 @@ class XueqiuCrawler:
                 self.logger.info(f"  API 页 {page_num}: {len(items)} 条 "
                                  f"(累计 {len(discussions)} 条, 专栏 {sum(1 for d in discussions if d.is_column)})")
 
+                # count-based stop
+                if max_items > 0 and total_items_fn and total_items_fn() >= max_items:
+                    self.logger.info(f"  [count-stop] 总条数已达 {max_items}，停止")
+                    break
+
                 if len(items) < 20:
                     break
 
@@ -618,7 +672,8 @@ class XueqiuCrawler:
             self.logger.warning(f"API 爬取讨论失败: {e}")
         return discussions
 
-    def _crawl_notices_via_api(self, symbol: str, max_pages: int = 10, days: int = 0) -> List[Notice]:
+    def _crawl_notices_via_api(self, symbol: str, max_pages: int = 10, days: int = 0,
+                               max_items: int = 0, total_items_fn=None) -> List[Notice]:
         """通过雪球官方 API 爬取公告。
 
         API: GET https://xueqiu.com/statuses/stock_timeline.json
@@ -688,6 +743,10 @@ class XueqiuCrawler:
                         notice_type=nt_type,
                     ))
                 self.logger.info(f"  公告 API 页 {page_num}: {len(items)} 条 (累计 {len(notices)} 条)")
+                # count-based stop
+                if max_items > 0 and total_items_fn and total_items_fn() >= max_items:
+                    self.logger.info(f"  [count-stop] 总条数已达 {max_items}，停止")
+                    break
                 if should_stop:
                     break
                 if len(items) < 10:
@@ -1133,13 +1192,18 @@ class XueqiuCrawler:
     # ========== DOM Fallback 方法（API 失败时使用） ==========
 
     def _crawl_items_with_pagination(self, page, parse_fn, result_list,
-                                       max_pages=100, target_count=1000):
+                                       max_pages=100, target_count=1000,
+                                       max_items: int = 0, total_items_fn=None,
+                                       days: int = 0):
         """Navigate pages, parse items, accumulate into result_list.
 
-        Time-aware stop: when items start showing yesterday's date patterns.
+        Supports count-based stop (max_items), global total check (total_items_fn),
+        and time filter (days).
         """
         seen_content = set()
         stale_pages = 0
+        time_cutoff = datetime.now().timestamp() - days * 86400 if days > 0 else 0
+        stale_time_items = 0  # consecutive items beyond time window
 
         for page_num in range(1, max_pages + 1):
             try:
@@ -1156,8 +1220,25 @@ class XueqiuCrawler:
                             sig = (getattr(obj, 'content', '') or getattr(obj, 'title', ''))[:50]
                             if sig and sig not in seen_content:
                                 seen_content.add(sig)
+
+                                # time filter: check if DOM item has a date beyond window
+                                if days > 0:
+                                    item_time = getattr(obj, 'time', '')
+                                    if item_time and _is_beyond_time_window(item_time, days):
+                                        stale_time_items += 1
+                                        if stale_time_items >= 3:
+                                            self.logger.info(f"[DOM] ⏱ 连续 {stale_time_items} 条超出时间窗口 ({days}d)，停止")
+                                            return
+                                        continue
+                                    stale_time_items = 0
+
                                 result_list.append(obj)
                                 parsed += 1
+
+                                # count-based stop
+                                if max_items > 0 and total_items_fn and total_items_fn() >= max_items:
+                                    self.logger.info(f"[DOM] ⏹ 总条数已达 {max_items}，停止")
+                                    return
                     except Exception:
                         pass
 
