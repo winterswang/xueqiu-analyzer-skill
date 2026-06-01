@@ -281,3 +281,51 @@ SCORING_CRITERIA = {
         "0": "无前景相关内容",
     },
 }
+
+
+# ── Content Grader 数据模型 ──
+
+@dataclass
+class GraderItem:
+    """单条内容 LLM 评分结果"""
+    item_id: int
+    density: int = 0       # 信息密度 1-5
+    cred: int = 0          # 来源可信度 1-5
+    novelty: int = 0       # 增量价值 1-5
+    summary: str = ""      # 一句话客观概括
+
+    @property
+    def combined(self) -> int:
+        return self.density + self.cred + self.novelty
+
+    @property
+    def is_high_quality(self) -> bool:
+        return self.combined >= 10
+
+
+@dataclass
+class Theme:
+    """讨论中出现的争议主题"""
+    name: str
+    bull_side: str = ""
+    bear_side: str = ""
+    key_item_ids: list = field(default_factory=list)
+
+
+@dataclass
+class BatchGraderResult:
+    """单批次评分结果"""
+    items: list = field(default_factory=list)          # List[GraderItem]
+    themes: list = field(default_factory=list)          # List[Theme]
+    consensus_points: list = field(default_factory=list)
+    info_gaps: list = field(default_factory=list)
+    total_items: int = 0
+    batch_num: int = 0
+
+    @property
+    def high_quality_items(self) -> list:
+        return [i for i in self.items if i.is_high_quality]
+
+    @property
+    def quality_count(self) -> int:
+        return len(self.high_quality_items)
