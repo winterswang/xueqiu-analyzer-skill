@@ -22,6 +22,7 @@ _PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
 BATCH_TOKEN_LIMIT = 65000
 PROMPT_TOKEN_OVERHEAD = 2000
 MAX_CONTENT_TOKENS = BATCH_TOKEN_LIMIT - PROMPT_TOKEN_OVERHEAD
+MAX_ITEMS_PER_BATCH = 50  # LLM 单批可稳定输出 JSON 的上限
 DEFAULT_QUALITY_THRESHOLD = 10
 
 
@@ -55,7 +56,8 @@ class ContentGrader:
         all_items = self._merge_items(discussions, articles)
 
         # 2. 按 token 预算分批
-        batches = build_batches(all_items, MAX_CONTENT_TOKENS)
+        batches = build_batches(all_items, MAX_CONTENT_TOKENS,
+                                max_items=MAX_ITEMS_PER_BATCH)
         if not batches:
             return BatchGraderResult(total_items=0, batch_num=0)
 

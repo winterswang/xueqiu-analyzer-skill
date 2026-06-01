@@ -17,7 +17,6 @@ from xueqiu_analyzer.models import CrawlResult
 from xueqiu_analyzer.evaluator import Evaluator
 from xueqiu_analyzer.analyzer import Analyzer
 from xueqiu_analyzer.orchestrator import Orchestrator
-from xueqiu_analyzer.stock_analyzer import DeepAnalyzer as StockAnalyzer
 
 
 def _setup_logging(verbose: bool = False):
@@ -195,6 +194,7 @@ def deep_analyze(symbol, output_dir, max_pages, days, max_articles, max_news, ma
 
     from pathlib import Path
     from xueqiu_analyzer.config import get_config
+    from xueqiu_analyzer.stock_analyzer import DeepAnalyzer as StockAnalyzer
 
     config = get_config()
 
