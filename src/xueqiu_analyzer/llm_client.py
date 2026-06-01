@@ -8,7 +8,7 @@ import json
 import logging
 import urllib.request
 import urllib.error
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .config import get_llm_config
 
@@ -41,7 +41,7 @@ class LLMClient:
         data = {
             "model": self.config['model'],
             "messages": messages,
-            "max_tokens": max_tokens if max_tokens is not None else self.config['max_tokens'],
+            "max_tokens": max_tokens or self.config['max_tokens'],
             "temperature": temperature if temperature is not None
             else self.config['temperature'],
         }
