@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
-> 最后更新：2026-05-25  
-> 版本：V3.0.2  
-> 最近一次 `LAST_ANALYZED`：`f58e9f4`
-> 分析范围：全部历史 commit（47 个）
+> 最后更新：2026-06-02  
+> 版本：V4.0  
+> 最近一次 `LAST_ANALYZED`：`f1ad6fa`
+> 分析范围：全部历史 commit（91 个）
 
-<!-- @@LAST_ANALYZED: f58e9f44f58052abf91c4c84a8b8ceb3119edc09 @@-->
+<!-- @@LAST_ANALYZED: f1ad6fad7aefb8f0d03bfdf96e80ddedd7b6d5a3 @@-->
 
 ---
 
