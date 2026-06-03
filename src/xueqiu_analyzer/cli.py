@@ -17,7 +17,6 @@ from xueqiu_analyzer.models import CrawlResult
 from xueqiu_analyzer.evaluator import Evaluator
 from xueqiu_analyzer.analyzer import Analyzer
 from xueqiu_analyzer.orchestrator import Orchestrator
-from xueqiu_analyzer.stock_analyzer import DeepAnalyzer as StockAnalyzer
 
 
 def _setup_logging(verbose: bool = False):
@@ -201,6 +200,7 @@ def deep_analyze(symbol, output_dir, max_pages, days, max_items,
 
     from pathlib import Path
     from xueqiu_analyzer.config import get_config
+    from xueqiu_analyzer.stock_analyzer import DeepAnalyzer as StockAnalyzer
 
     config = get_config()
 
@@ -321,6 +321,68 @@ def _import_cookies(filepath: str):
         json.dump(normalized, f, indent=2)
 
     click.echo(f"✅ 已导入 {len(normalized)} 个 cookies")
+
+
+@cli.command()
+@click.option("--data", required=True, help="数据文件路径 (JSON)")
+@click.option("--threshold", default=10, help="高质量综合分阈值")
+def grade(data, threshold):
+    """对已爬取数据进行内容质量评分"""
+    import json as _json
+    from xueqiu_analyzer.models import CrawlResult
+    from xueqiu_analyzer.content_grader import ContentGrader
+
+    with open(data, "r", encoding="utf-8") as f:
+        raw = _json.load(f)
+
+    crawl_result = CrawlResult.from_dict(raw)
+    grader = ContentGrader(threshold=threshold)
+
+    # 将 dataclass 对象转为 dict
+    discussions = [
+        {"author": d.author, "content": d.content, "time": d.time}
+        for d in crawl_result.discussions
+    ]
+    articles = [
+        {"author": a.author, "content": a.content, "title": a.title}
+        for a in crawl_result.articles
+    ]
+
+    result = grader.grade(discussions=discussions, articles=articles)
+
+    click.echo(f"\n{'='*50}")
+    click.echo(f"内容质量评分: {crawl_result.symbol}")
+    click.echo(f"{'='*50}")
+    click.echo(f"总内容: {result.total_items} 条")
+    click.echo(f"高质量 (combined≥{threshold}): "
+               f"{len(result.filter_by_threshold(threshold))} 条")
+
+    if result.themes:
+        click.echo(f"\n争议主题 ({len(result.themes)}):")
+        for t in result.themes[:5]:
+            click.echo(f"  📌 {t.name}")
+            click.echo(f"     看多: {t.bull_side[:80]}")
+            click.echo(f"     看空: {t.bear_side[:80]}")
+
+    if result.consensus_points:
+        click.echo(f"\n共识 ({len(result.consensus_points)}):")
+        for p in result.consensus_points[:5]:
+            click.echo(f"  ✅ {p}")
+
+    if result.info_gaps:
+        click.echo(f"\n缺失信息 ({len(result.info_gaps)}):")
+        for g in result.info_gaps[:5]:
+            click.echo(f"  ❓ {g}")
+
+    # 输出 Top 5 高质量帖子
+    high = sorted(
+        result.filter_by_threshold(threshold),
+        key=lambda x: x.combined, reverse=True
+    )[:5]
+    if high:
+        click.echo(f"\nTop {len(high)} 高质量内容:")
+        for h in high:
+            click.echo(f"  ⭐ [{h.combined}分] {h.summary[:80]}")
 
 
 def main():

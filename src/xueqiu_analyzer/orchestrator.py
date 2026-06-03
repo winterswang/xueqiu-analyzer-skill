@@ -71,6 +71,32 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"  财务数据获取失败: {e}")
 
+        # 1.6 内容分级 — LLM 驱动的高价值讨论筛选
+        grader_config = self.config.get('grader', {})
+        if grader_config.get('enabled', True) and crawl_result.discussions:
+            try:
+                from .content_grader import ContentGrader
+                grader = ContentGrader(
+                    config=self.config,
+                    threshold=grader_config.get('threshold', 10)
+                )
+                grade_result = grader.grade(
+                    discussions=self._dictify_discussions(crawl_result),
+                    articles=self._dictify_articles(crawl_result),
+                )
+                logger.info(
+                    f"  内容分级: {len(crawl_result.discussions)} 讨论 + "
+                    f"{len(crawl_result.articles)} 专栏 → "
+                    f"{grade_result.quality_count} 条高质量内容"
+                )
+                if grade_result.themes:
+                    for t in grade_result.themes[:3]:
+                        logger.info(f"  争议: {t.name}")
+                # 将精选讨论 ID 注入 crawl_result 供 analyzer 使用
+                crawl_result._grader_result = grade_result  # type: ignore
+            except Exception as e:
+                logger.warning(f"  内容分级失败, 使用全量数据: {e}")
+
         # 2. 评估
         evaluation = self.evaluator.evaluate(crawl_result)
         self._log_evaluation(evaluation)
@@ -174,6 +200,22 @@ class Orchestrator:
             with open(cookies_path) as f:
                 return json.load(f)
         return []
+
+    def _dictify_discussions(self, crawl_result) -> list:
+        """将 Discussion 对象转为 dict (供 ContentGrader 使用)"""
+        return [
+            {"author": d.author, "content": d.content, "time": d.time,
+             "link": getattr(d, 'link', '')}
+            for d in crawl_result.discussions
+        ]
+
+    def _dictify_articles(self, crawl_result) -> list:
+        """将 Article 对象转为 dict (供 ContentGrader 使用)"""
+        return [
+            {"author": a.author, "content": a.content, "title": a.title,
+             "time": a.time, "link": getattr(a, 'link', '')}
+            for a in crawl_result.articles
+        ]
 
     def _load_data(self, path: str) -> CrawlResult:
         """从 JSON 文件加载数据"""
