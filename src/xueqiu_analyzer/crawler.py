@@ -1202,7 +1202,6 @@ class XueqiuCrawler:
         """
         seen_content = set()
         stale_pages = 0
-        time_cutoff = datetime.now().timestamp() - days * 86400 if days > 0 else 0
         stale_time_items = 0  # consecutive items beyond time window
 
         for page_num in range(1, max_pages + 1):

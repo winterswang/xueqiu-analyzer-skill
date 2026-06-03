@@ -169,7 +169,6 @@ class TestNotificationConfig:
     """Verify FEISHU_TARGET_USER placeholder resolves correctly."""
 
     def test_feishu_resolve(self):
-        import os
         from src.xueqiu_analyzer.config import get_config
         cfg = get_config()
         notify = cfg.get('notify', {})
