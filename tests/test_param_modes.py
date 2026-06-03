@@ -140,13 +140,13 @@ class TestAutoCrawl:
 class TestCLIParams:
     """CLI parameter validation tests."""
 
-    def test_deep_analyze_has_all_new_params(self):
-        """deep-analyze should show --auto --max-items --quality-score in help."""
+    def test_sentiment_has_all_new_params(self):
+        """sentiment should show --auto --max-items --quality-score in help."""
         from click.testing import CliRunner
         from src.xueqiu_analyzer.cli import cli
 
         runner = CliRunner()
-        result = runner.invoke(cli, ['deep-analyze', '--help'])
+        result = runner.invoke(cli, ['sentiment', '--help'])
         assert result.exit_code == 0
         output = result.output
         assert '--auto' in output

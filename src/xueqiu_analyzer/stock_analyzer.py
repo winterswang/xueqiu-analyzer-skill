@@ -729,13 +729,31 @@ class DeepAnalyzer:
         if analysis.get('bull_points'):
             lines += ["## 二、多方观点（看多理由）", ""]
             for pt in analysis['bull_points']:
-                lines.append(f"- {pt}")
+                if isinstance(pt, dict):
+                    point_text = pt.get('point', str(pt))
+                    confidence = pt.get('confidence', '')
+                    source_indices = pt.get('source_indices', [])
+                    suffix = f" [可信度: {confidence}]" if confidence else ""
+                    if source_indices:
+                        suffix += f" [@index={','.join(str(i) for i in source_indices)}]"
+                    lines.append(f"- {point_text}{suffix}")
+                else:
+                    lines.append(f"- {pt}")
             lines += ["", "---", ""]
 
         if analysis.get('bear_points'):
             lines += ["## 三、空方观点（风险因素）", ""]
             for pt in analysis['bear_points']:
-                lines.append(f"- {pt}")
+                if isinstance(pt, dict):
+                    point_text = pt.get('point', str(pt))
+                    confidence = pt.get('confidence', '')
+                    source_indices = pt.get('source_indices', [])
+                    suffix = f" [可信度: {confidence}]" if confidence else ""
+                    if source_indices:
+                        suffix += f" [@index={','.join(str(i) for i in source_indices)}]"
+                    lines.append(f"- {point_text}{suffix}")
+                else:
+                    lines.append(f"- {pt}")
             lines += ["", "---", ""]
 
         if analysis.get('topics'):
@@ -793,7 +811,15 @@ class DeepAnalyzer:
         if analysis.get('actionable_insights'):
             lines += ["## 八、可执行的投资洞见", ""]
             for ins in analysis['actionable_insights']:
-                lines.append(f"- {ins}")
+                if isinstance(ins, dict):
+                    insight_text = ins.get('insight', str(ins))
+                    basis = ins.get('basis', '')
+                    line = f"- {insight_text}"
+                    if basis:
+                        line += f"（依据：{basis}）"
+                    lines.append(line)
+                else:
+                    lines.append(f"- {ins}")
             lines += ["", "---", ""]
 
         if analysis.get('concerns'):

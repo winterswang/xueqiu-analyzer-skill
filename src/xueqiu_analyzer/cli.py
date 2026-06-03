@@ -176,7 +176,7 @@ def reanalyze(data, template):
     click.echo(f"✅ 分析完成: {report_path}")
 
 
-@cli.command()
+@cli.command('sentiment')
 @click.argument('symbol')
 @click.option('--output-dir', '-o', default=None, help='输出目录（默认 ~/.xueqiu_stocks/{SYMBOL}/{timestamp}/）')
 @click.option('--max-pages', default=10, help='最大分页数（硬上限兜底）')
@@ -187,9 +187,12 @@ def reanalyze(data, template):
 @click.option('--max-notices', default=10, help='最大公告正文爬取数（0=只爬标题）')
 @click.option('--auto', is_flag=True, help='质量驱动模式：迭代爬取直到评分达标')
 @click.option('--quality-score', default=150, help='auto 模式评分阈值')
-def deep_analyze(symbol, output_dir, max_pages, days, max_items,
-                 max_articles, max_news, max_notices, auto, quality_score):
-    """深度舆情分析：爬取 → 本地存储 → DeepSeek 分析 → Markdown 报告
+def sentiment(symbol, output_dir, max_pages, days, max_items,
+              max_articles, max_news, max_notices, auto, quality_score):
+    """舆情扫描：爬取雪球社区数据，输出多空观点+主题分布+投资洞见。
+
+    生成的是舆情快照（非投资建议），适合快速了解市场情绪。
+    如需完整投资分析报告（含估值/仓位/止损），请使用 'analyze' 命令。
 
     数据规模参考：
     - max_pages=10, days=0  →  ~180 条讨论 + 20 条新闻 + 20 条公告
@@ -214,7 +217,7 @@ def deep_analyze(symbol, output_dir, max_pages, days, max_items,
     else:
         storage_dir = Path('~/.xueqiu_stocks').expanduser()
 
-    click.echo(f"📊 开始深度分析: {symbol}")
+    click.echo(f"📊 开始舆情扫描: {symbol}")
     mode_info = f"auto={auto}" if auto else f"max_pages={max_pages}"
     click.echo(f"   {mode_info}, days={days}, max_items={max_items}, max_articles={max_articles}")
     click.echo(f"   输出目录: {storage_dir}")
@@ -391,6 +394,9 @@ def grade(data, threshold):
 
 def main():
     cli()
+
+# 向后兼容：deep-analyze → sentiment
+cli.add_command(cli.commands['sentiment'], 'deep-analyze')
 
 
 if __name__ == '__main__':
