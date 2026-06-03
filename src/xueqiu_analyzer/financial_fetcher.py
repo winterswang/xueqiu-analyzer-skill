@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -27,7 +28,7 @@ _FINANCIAL_SDK_DIR = Path(
     os.environ.get("FINANCIAL_SDK_DIR", str(Path.home() / "code" / "claude_code" / "financial-sdk"))
 )
 _FINANCIAL_SDK_CLI = _FINANCIAL_SDK_DIR / "src" / "financial_sdk_cli.py"
-_FINANCIAL_SDK_PYTHON = _FINANCIAL_SDK_DIR / ".venv" / "bin" / "python"
+_FINANCIAL_SDK_PYTHON = Path(sys.executable)  # 使用当前 Python，不依赖 .venv
 
 
 def detect_market(symbol: str) -> str:
