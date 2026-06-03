@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # financial-sdk CLI 路径 —— 优先环境变量 FINANCIAL_SDK_DIR
 _FINANCIAL_SDK_DIR = Path(
-    os.environ.get("FINANCIAL_SDK_DIR", "/root/code/financial-sdk")
+    os.environ.get("FINANCIAL_SDK_DIR", str(Path.home() / "code" / "claude_code" / "financial-sdk"))
 )
 _FINANCIAL_SDK_CLI = _FINANCIAL_SDK_DIR / "src" / "financial_sdk_cli.py"
 _FINANCIAL_SDK_PYTHON = _FINANCIAL_SDK_DIR / ".venv" / "bin" / "python"
