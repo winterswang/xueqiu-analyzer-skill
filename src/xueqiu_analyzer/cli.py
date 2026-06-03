@@ -83,7 +83,9 @@ def analyze(symbol, max_rounds, data, template):
 @click.option('--max-articles', default=10, help='最大文章数')
 @click.option('--days', default=0, help='只看最近 N 天（0=不限）')
 @click.option('--max-items', default=0, help='最大总内容条数（0=不限）')
-def crawl(symbol, output, max_pages, max_articles, days, max_items):
+@click.option('--max-news', default=10, help='最大新闻正文爬取数（0=只爬标题）')
+@click.option('--max-notices', default=10, help='最大公告正文爬取数（0=只爬标题）')
+def crawl(symbol, output, max_pages, max_articles, days, max_items, max_news, max_notices):
     """只爬取数据，保存为 JSON"""
     try:
         from xueqiu_analyzer.crawler import XueqiuCrawler
@@ -97,7 +99,9 @@ def crawl(symbol, output, max_pages, max_articles, days, max_items):
     click.echo(f"开始爬取: {symbol}")
     result = crawler.crawl(symbol, max_pages=max_pages,
                            max_articles=max_articles, days=days,
-                           max_items=max_items)
+                           max_items=max_items,
+                           max_news=max_news,
+                           max_notices=max_notices)
 
     # 保存
     if output:
