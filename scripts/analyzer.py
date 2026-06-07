@@ -30,13 +30,30 @@ except ImportError:
 from stock_crawler_v2 import XueqiuStockCrawlerV2 as XueqiuStockCrawler
 from report_generator import ReportGenerator
 
+# OpenCLI fallback (zero-WAF via Chrome extension)
+try:
+    from stock_fetcher_opencli import is_available as _opencli_available
+    from stock_fetcher_opencli import OpencliStockFetcher
+    _HAS_OPENCLI = True
+except ImportError:
+    _HAS_OPENCLI = False
+    def _opencli_available() -> bool: return False
+
 
 class XueqiuAnalyzer:
-    """雪球公司分析器"""
-    
+    """雪球公司分析器 — OpenCLI 优先，Playwright 兜底"""
+
     def __init__(self, api_key: str = None, headless: bool = True):
-        self.crawler = XueqiuStockCrawler(headless=headless)
         self.report_generator = ReportGenerator(api_key=api_key)
+
+        # Detect opencli availability
+        self._use_opencli = _HAS_OPENCLI and _opencli_available()
+        if self._use_opencli:
+            print("✅ OpenCLI 可用，启用 Chrome 扩展模式（零 WAF）")
+            self.crawler = OpencliStockFetcher()
+        else:
+            print("ℹ️ OpenCLI 不可用，使用 Playwright 模式")
+            self.crawler = XueqiuStockCrawler(headless=headless)
     
     def analyze(self, stock_name: str, stock_code: str, market: str = 'cn', max_discussions: int = 10, max_news: int = 10) -> str:
         """
