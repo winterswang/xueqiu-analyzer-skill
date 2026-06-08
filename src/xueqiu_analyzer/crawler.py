@@ -145,6 +145,28 @@ class XueqiuCrawler:
         def _items_limit_reached() -> bool:
             return max_items > 0 and _total_items() >= max_items
 
+        # ── Pre-fetch via opencli (before Playwright, zero-WAF) ──
+        _opencli_discs = None
+        _opencli_notices = None
+        try:
+            from xueqiu_analyzer.fetcher_opencli import is_available as _ocli_ok
+            from xueqiu_analyzer.fetcher_opencli import fetch_discussions as _ocli_discs
+            from xueqiu_analyzer.fetcher_opencli import fetch_notices as _ocli_notices
+            if _ocli_ok():
+                self.logger.info("opencli 可用，优先使用 Chrome 扩展模式")
+                try:
+                    _opencli_discs = _ocli_discs(symbol, limit=min(max_pages * 50, 100))
+                    self.logger.info(f"opencli 预取: {len(_opencli_discs or [])} 条讨论")
+                except Exception as e:
+                    self.logger.warning(f"opencli 讨论预取失败: {e}")
+                try:
+                    _opencli_notices = _ocli_notices(symbol, limit=min(max_pages * 10, 50))
+                    self.logger.info(f"opencli 预取: {len(_opencli_notices or [])} 条公告")
+                except Exception as e:
+                    self.logger.warning(f"opencli 公告预取失败: {e}")
+        except Exception as e:
+            self.logger.info(f"opencli 预取跳过: {e}")
+
         with sync_playwright() as p:
             browser, context = self._create_browser_context(p)
             page = context.new_page()
@@ -205,30 +227,41 @@ class XueqiuCrawler:
                         break
 
                 # ========== 爬取讨论 ==========
-                self.logger.info("=== 爬取讨论 (API) ===")
-                api_discs = self._crawl_discussions_via_api(
-                    symbol, max_pages=max_pages, per_page=50, days=days,
-                    max_items=max_items, total_items_fn=_total_items)
-                for disc in api_discs:
-                    if disc.is_column and disc.link:
-                        result.articles.append(Article(
-                            title=disc.content[:80],
-                            author=disc.author,
-                            content=disc.content,
-                            time=disc.time,
-                            link=disc.link,
-                            is_column=True,
+                self.logger.info("=== 爬取讨论 ===")
+                if _opencli_discs is not None:
+                    self.logger.info(f"使用 opencli 预取结果: {len(_opencli_discs)} 条")
+                    for item in _opencli_discs:
+                        result.discussions.append(Discussion(
+                            author=item.get('author', ''),
+                            content=(item.get('text', '') or item.get('content', ''))[:500],
+                            time=item.get('created_at', ''),
+                            link=item.get('url', ''),
+                            is_column=False,
                         ))
-                    else:
-                        result.discussions.append(disc)
-                self.logger.info(f"API 获取 {len(result.discussions)} 条讨论（含 {sum(1 for d in result.discussions if d.is_column)} 专栏）")
+                else:
+                    api_discs = self._crawl_discussions_via_api(
+                        symbol, max_pages=max_pages, per_page=50, days=days,
+                        max_items=max_items, total_items_fn=_total_items)
+                    for disc in api_discs:
+                        if disc.is_column and disc.link:
+                            result.articles.append(Article(
+                                title=disc.content[:80],
+                                author=disc.author,
+                                content=disc.content,
+                                time=disc.time,
+                                link=disc.link,
+                                is_column=True,
+                            ))
+                        else:
+                            result.discussions.append(disc)
+                    self.logger.info(f"API 获取 {len(result.discussions)} 条讨论")
                 if _items_limit_reached():
                     self.logger.info(f"⏹ 总条数已达上限 ({max_items})，停止爬取")
                     self._save_cookies(context)
                     return result
 
-                # ── DOM Fallback: API 数据不足时用 Playwright 补充 ──
-                if len(api_discs) < 3:
+                # ── DOM Fallback: 讨论不足时用 Playwright 补充 ──
+                if len(result.discussions) < 3 and _opencli_discs is None:
                     self.logger.info("⚠️ API 讨论不足 3 条，退到 DOM 翻页")
                     if self._switch_tab(page, '讨论'):
                         self.human_delay(1, 2)
@@ -282,11 +315,21 @@ class XueqiuCrawler:
                     self.logger.info("资讯详情爬取完成")
 
                 # ========== 爬取公告 ==========
-                self.logger.info("=== 爬取公告 (API) ===")
-                result.notices = self._crawl_notices_via_api(
-                    symbol, max_pages=max_pages, days=days,
-                    max_items=max_items, total_items_fn=_total_items)
-                self.logger.info(f"API 获取 {len(result.notices)} 条公告")
+                self.logger.info("=== 爬取公告 ===")
+                if _opencli_notices is not None:
+                    self.logger.info(f"使用 opencli 预取结果: {len(_opencli_notices)} 条")
+                    for item in _opencli_notices:
+                        result.notices.append(Notice(
+                            title=item.get('title', '')[:200],
+                            time=item.get('created_at', ''),
+                            notice_type=item.get('type', ''),
+                            link=item.get('url', ''),
+                        ))
+                else:
+                    result.notices = self._crawl_notices_via_api(
+                        symbol, max_pages=max_pages, days=days,
+                        max_items=max_items, total_items_fn=_total_items)
+                    self.logger.info(f"API 获取 {len(result.notices)} 条公告")
 
                 # ── DOM Fallback ──
                 if len(result.notices) < 3:
@@ -591,6 +634,40 @@ class XueqiuCrawler:
         if days > 0:
             time_cutoff = datetime.now().timestamp() - days * 86400
 
+        # ── Tier 1: opencli (zero-WAF via Chrome extension) ──
+        try:
+            from .fetcher_opencli import is_available, fetch_discussions
+            if is_available():
+                limit = min(max_pages * per_page, 100)
+                items = fetch_discussions(symbol, limit=limit)
+                if items:
+                    for item in items:
+                        created_ts = 0
+                        if item.get('created_at'):
+                            try:
+                                created_ts = datetime.fromisoformat(
+                                    item['created_at'].replace('Z', '+00:00')
+                                ).timestamp()
+                            except Exception:
+                                pass
+                        if days > 0 and created_ts > 0 and created_ts < time_cutoff:
+                            self.logger.info(f"  [opencli 时间过滤] 遇到 {days} 天前的帖子，停止")
+                            break
+                        discussions.append(Discussion(
+                            author=item.get('author', ''),
+                            content=(item.get('text', '') or '')[:500],
+                            time=item.get('created_at', ''),
+                            link=item.get('url', ''),
+                            is_column=False,
+                        ))
+                        if max_items > 0 and total_items_fn and total_items_fn() >= max_items:
+                            break
+                    self.logger.info(f"  opencli: {len(discussions)} 条讨论")
+                    return discussions
+        except Exception as e:
+            self.logger.warning(f"opencli 讨论获取失败: {e}，降级到 API")
+
+        # ── Tier 2/3: requests API fallback ──
         try:
             cookies_path = Path(self.cookies_path)
             if not cookies_path.exists():
@@ -674,11 +751,27 @@ class XueqiuCrawler:
 
     def _crawl_notices_via_api(self, symbol: str, max_pages: int = 10, days: int = 0,
                                max_items: int = 0, total_items_fn=None) -> List[Notice]:
-        """通过雪球官方 API 爬取公告。
+        """通过雪球官方 API 爬取公告。"""
+        notices = []
+        # ── Tier 1: opencli (zero-WAF via Chrome extension) ──
+        try:
+            from .fetcher_opencli import is_available, fetch_notices
+            if is_available():
+                items = fetch_notices(symbol, limit=min(max_pages * 10, 50))
+                if items:
+                    for item in items:
+                        notices.append(Notice(
+                            title=item.get('title', '')[:200],
+                            time=item.get('created_at', ''),
+                            notice_type=item.get('type', ''),
+                            link=item.get('url', ''),
+                        ))
+                    self.logger.info(f"  opencli: {len(notices)} 条公告")
+                    return notices
+        except Exception as e:
+            self.logger.warning(f"opencli 公告获取失败: {e}，降级到 API")
 
-        API: GET https://xueqiu.com/statuses/stock_timeline.json
-        params: symbol_id, source=公告, count=10, page=N
-        """
+        # ── Tier 2/3: requests API fallback ──
         notices = []
         try:
             cookies_path = Path(self.cookies_path)
