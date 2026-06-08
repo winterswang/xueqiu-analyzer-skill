@@ -101,8 +101,31 @@ def get_config(reload: bool = False) -> dict:
     return config
 
 
+# API Key fallback 链：当 config.yaml 中的 primary key 未设置时依次尝试
+# 每个条目: (环境变量名, {默认配置})
+_FALLBACK_KEYS = [
+    ('ARK_API_KEY', {
+        'base_url': 'https://ark.cn-beijing.volces.com/api/coding/v3',
+    }),
+    ('BAILIAN_API_KEY', {
+        'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    }),
+    ('DASHSCOPE_API_KEY', {
+        'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    }),
+]
+
+
 def _build_llm_config(yaml_config: dict) -> dict:
-    """构建 LLM 配置"""
+    """构建 LLM 配置
+
+    API Key 优先级：
+    1. config.yaml 中 api_key 指定的环境变量
+    2. 通用 fallback: ARK_API_KEY > BAILIAN_API_KEY > DASHSCOPE_API_KEY
+    3. OpenClaw provider 配置（仅当以上都为空时）
+
+    当 key 来源变更时，base_url 自动跟随切换，避免 key/endpoint 不匹配。
+    """
     llm_cfg = yaml_config.get('llm', {})
 
     base_url = _resolve_env(llm_cfg.get('base_url', ''))
@@ -111,13 +134,18 @@ def _build_llm_config(yaml_config: dict) -> dict:
     temperature = llm_cfg.get('temperature', 0.7)
 
     # API Key: yaml指定的env > 通用fallback > openclaw.json
-    api_key = (
-        _resolve_env(llm_cfg.get('api_key', '')) or
-        os.environ.get('ARK_API_KEY') or
-        os.environ.get('BAILIAN_API_KEY') or
-        os.environ.get('DASHSCOPE_API_KEY') or
-        ''
-    )
+    primary_key = _resolve_env(llm_cfg.get('api_key', ''))
+    api_key = primary_key or ''
+
+    # 通用 fallback：只有当 yaml 中的 key env 未设置时才检查
+    if not api_key:
+        for env_name, defaults in _FALLBACK_KEYS:
+            fallback_key = os.environ.get(env_name, '')
+            if fallback_key:
+                api_key = fallback_key
+                # key 来源变更 → base_url 跟随切换
+                base_url = defaults.get('base_url', base_url)
+                break
 
     if not api_key:
         fallback = _load_openclaw_provider()
