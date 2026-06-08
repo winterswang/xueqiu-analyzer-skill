@@ -1,13 +1,13 @@
 ---
 name: xueqiu-analyzer
 description: 雪球公司分析 Skill V3 — 自动化雪球舆情爬取 + 硬指标数据质检 + AI 深度投资报告
-version: 3.1.0
+version: 3.2.0
 author: winterswang
 ---
 
 # 雪球公司分析 Skill V3
 
-自动化爬取雪球股票舆情数据，经硬指标质检和 LLM 充分性评估后，生成结构化投资价值分析报告。
+自动化爬取雪球股票舆情数据，经硬指标质检和 LLM 充分性评估后，生成结构化投资价值分析报告。分析结果自动发布到飞书文档和 IMA 笔记。
 
 ## 快速使用
 
@@ -26,8 +26,12 @@ cd /root/code/xueqiu-analyzer-skill
 # 只评估已有数据
 .venv/bin/python -m xueqiu_analyzer.cli evaluate data/TCOM_data_20260524_140620.json
 
-# 重新分析已有数据
+# 重新分析已有数据（自动发布到 IMA）
 .venv/bin/python -m xueqiu_analyzer.cli reanalyze data/TCOM_data_20260524_140620.json
+
+# 重新分析并发布到指定 IMA 笔记本
+.venv/bin/python -m xueqiu_analyzer.cli reanalyze data/TCOM_data_20260524_140620.json \
+    --ima-folder folder_xxx --ima-folder-name "我的笔记本"
 
 # 使用保守模板（含估值温度）
 .venv/bin/python -m xueqiu_analyzer.cli analyze TCOM --template conservative
@@ -43,6 +47,8 @@ cd /root/code/xueqiu-analyzer-skill
 | `--max-pages` | 10 | 最大翻页数（兜底，实际由时间停止控制） |
 | `--max-articles` | 20 | 讨论详情富化上限（打开详情页补标题/评论） |
 | `--timeout` | 1200 | 超时秒数 |
+| `--ima-folder` | — | IMA 笔记本 ID（默认「价值投资研究」） |
+| `--ima-folder-name` | — | IMA 笔记本名称（可选） |
 
 ---
 
@@ -73,12 +79,18 @@ cd /root/code/xueqiu-analyzer-skill
 │          ├─ Evaluator (Layer 2: LLM 评分)                      │
 │          │    └─ 8维度 × 25分 → 150分阈值                       │
 │          │                                                     │
-│          └─ Analyzer (LLM 深度分析)                             │
-│               └─ 执行摘要 + 8主题分析 + 投资决策                 │
+│          ├─ Analyzer (LLM 深度分析)                             │
+│          │    └─ 执行摘要 + 8主题分析 + 投资决策                  │
+│          │                                                     │
+│          └─ IMA Publisher (笔记发布)                             │
+│               ├─ prepend_report_title (自动标题前缀)             │
+│               ├─ extract_title (Markdown → 笔记标题)             │
+│               └─ import_doc (写入 IMA 笔记本)                    │
 │                                                                │
 │  输出: data/{SYMBOL}_data_{timestamp}.json                      │
 │         data/{SYMBOL}_evaluation_{timestamp}.md                 │
 │         data/{SYMBOL}_report_{timestamp}.md                     │
+│         IMA note_id (自动发布到指定笔记本)                       │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -222,6 +234,7 @@ Round 1
 ---
 
 ### FinancialData
+| 字段 | 来源 | 说明 |
 |------|------|------|
 | pe_ttm | 雪球 API | PE(TTM) |
 | pb | 雪球 API | 市净率 |
@@ -312,9 +325,18 @@ notify:
 ```
 
 **API Key 优先级**：
-1. 环境变量 `DEEPSEEK_API_KEY`
-2. `config/config.yaml` 中的 `${DEEPSEEK_API_KEY}` 占位符（自动替换）
-3. OpenClaw provider 配置
+1. `config.yaml` 中 `api_key` 指定的环境变量（如 `${DEEPSEEK_API_KEY}`）
+2. 通用 fallback 链：`ARK_API_KEY` → `BAILIAN_API_KEY` → `DASHSCOPE_API_KEY`
+3. OpenClaw provider 配置（`~/.openclaw/openclaw.json`）
+
+当 Key 来源变更时（如从 yaml key 回退到 ARK_KEY），`base_url` 自动跟随切换，避免 Key/Endpoint 不匹配导致 401 错误。
+
+**依赖管理**：`python-dotenv>=1.0` 已加入 `requirements.txt`，`.env` 文件在项目启动时自动加载。
+
+**IMA 凭证**：
+- 环境变量 `IMA_OPENAPI_CLIENTID` / `IMA_OPENAPI_APIKEY`（优先）
+- 文件 `~/.config/ima/client_id` / `~/.config/ima/api_key`（回退）
+- 默认发布到「价值投资研究」笔记本
 
 ---
 
@@ -324,7 +346,7 @@ notify:
 src/xueqiu_analyzer/
 ├── __init__.py
 ├── cli.py              # CLI 入口 (analyze/crawl/evaluate/reanalyze/cookies)
-├── orchestrator.py     # 迭代编排 (crawl→quality→evaluate→analyze)
+├── orchestrator.py     # 迭代编排 (crawl→quality→evaluate→analyze→IMA)
 ├── crawler.py          # Playwright 浏览器爬虫 (反检测/登录/cookies)
 ├── models.py           # 数据模型 (dataclass)
 ├── config.py           # 统一配置 (env > yaml > openclaw.json)
@@ -332,6 +354,7 @@ src/xueqiu_analyzer/
 ├── quality.py          # Layer 1 硬指标检测器
 ├── evaluator.py        # Layer 2 LLM 充分性评估
 ├── analyzer.py         # LLM 深度分析报告
+├── ima_publisher.py    # IMA 笔记发布 (标题提取/UTF-8校验/笔记本归入)
 ├── llm_client.py       # LLM API 客户端封装
 ├── config.yaml         # 配置文件
 prompts/
@@ -341,7 +364,8 @@ prompts/
 tests/
 ├── test_modules.py     # 模块单元测试
 ├── test_evaluator.py   # 评估器测试
-└── test_quality.py     # 硬指标检测器测试
+├── test_quality.py     # 硬指标检测器测试
+└── test_ima_publisher.py # IMA 发布测试
 ```
 
 ---
@@ -350,7 +374,7 @@ tests/
 
 ```bash
 .venv/bin/python -m pytest tests/ -q
-# 50 passed
+# 114 passed
 ```
 
 ---
@@ -362,6 +386,7 @@ tests/
 | Python 3.11+ | 运行时 |
 | Playwright + Chromium | 浏览器爬虫 |
 | financial-sdk | 财务指标（毛利率/净利率/ROE/ROIC） |
+| IMA OpenAPI | 笔记发布（需凭证） |
 | gh CLI | Gist 上传（可选） |
 
 `FINANCIAL_SDK_DIR` 环境变量可指定 financial-sdk 路径（默认 `/root/code/financial-sdk`）。
@@ -378,11 +403,13 @@ tests/
 6. **飞书通知**：通过文件 IPC（`/tmp/`）中转，未直连 API
 7. **爬虫脆弱**：严重依赖雪球 DOM 结构，UI 变更可能失效
 8. **无集成测试**：缺少端到端 Playwright + LLM 测试
+9. **IMA 内容大小**：超长报告可能触发 API 100009 错误，需拆分为多次 append 写入（暂未实现自动拆分）
 
 ---
 
 ## 版本历史
 
+- **V3.2.0**: IMA 笔记自动发布（标题提取 + 笔记本归入），python-dotenv 依赖修复，base_url 跟随 Key 来源自动切换
 - **V3.1.0**: 时间维度停止翻页、四分类模型（讨论/专栏/资讯/公告）、JS 结构化提取、评论爬取、专栏详情富化
 - **V3.0.0**: 完整模块化重构，financial-sdk 替换 AkShare，Layer 1 硬指标质检
 - **V2.2**: 多年 ROIC，公告详情页
