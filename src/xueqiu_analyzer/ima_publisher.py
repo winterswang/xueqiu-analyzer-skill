@@ -6,6 +6,7 @@ xueqiu-analyzer — IMA 笔记发布模块
 
 import json
 import logging
+import os
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -23,7 +24,6 @@ IMA_BASE_URL = "https://ima.qq.com"
 
 def _read_credential(env_key: str, file_path: str) -> str:
     """读取凭证：环境变量优先，回退到文件"""
-    import os
     value = os.environ.get(env_key)
     if value:
         return value
@@ -38,6 +38,21 @@ def _get_ima_credentials() -> tuple[str, str]:
     client_id = _read_credential("IMA_OPENAPI_CLIENTID", "~/.config/ima/client_id")
     api_key = _read_credential("IMA_OPENAPI_APIKEY", "~/.config/ima/api_key")
     return client_id, api_key
+
+
+def prepend_report_title(report: str, symbol: str, stock_name: str = "") -> str:
+    """为报告添加标题前缀，确保 IMA 笔记有清晰标题
+
+    Args:
+        report: Markdown 格式报告正文
+        symbol: 股票代码
+        stock_name: 股票名称（可选，默认使用 symbol）
+
+    Returns:
+        带标题前缀的完整报告
+    """
+    name = stock_name or symbol
+    return f"# {symbol} {name} 投资分析报告\n\n" + report
 
 
 def extract_title(markdown: str) -> str:

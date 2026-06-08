@@ -101,6 +101,21 @@ def get_config(reload: bool = False) -> dict:
     return config
 
 
+# API Key fallback 链：当 config.yaml 中的 primary key 未设置时依次尝试
+# 每个条目: (环境变量名, {默认配置})
+_FALLBACK_KEYS = [
+    ('ARK_API_KEY', {
+        'base_url': 'https://ark.cn-beijing.volces.com/api/coding/v3',
+    }),
+    ('BAILIAN_API_KEY', {
+        'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    }),
+    ('DASHSCOPE_API_KEY', {
+        'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    }),
+]
+
+
 def _build_llm_config(yaml_config: dict) -> dict:
     """构建 LLM 配置
 
@@ -124,17 +139,6 @@ def _build_llm_config(yaml_config: dict) -> dict:
 
     # 通用 fallback：只有当 yaml 中的 key env 未设置时才检查
     if not api_key:
-        _FALLBACK_KEYS = [
-            ('ARK_API_KEY', {
-                'base_url': 'https://ark.cn-beijing.volces.com/api/coding/v3',
-            }),
-            ('BAILIAN_API_KEY', {
-                'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-            }),
-            ('DASHSCOPE_API_KEY', {
-                'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-            }),
-        ]
         for env_name, defaults in _FALLBACK_KEYS:
             fallback_key = os.environ.get(env_name, '')
             if fallback_key:

@@ -16,6 +16,7 @@ from .evaluator import Evaluator
 from .analyzer import Analyzer
 from .financial_fetcher import FinancialFetcher
 from .quality import ContentQualityChecker, ContentQualityReport, HEALTH_THRESHOLD
+from .ima_publisher import publish_report, prepend_report_title
 
 logger = logging.getLogger(__name__)
 
@@ -282,8 +283,7 @@ class Orchestrator:
 
         # 分析报告 — 添加标题前缀
         stock_name = getattr(crawl_result, 'name', symbol) or symbol
-        report_title = f"# {symbol} {stock_name} 投资分析报告\n\n"
-        titled_report = report_title + report
+        titled_report = prepend_report_title(report, symbol, stock_name)
         report_path = data_dir / f'{symbol}_report_{timestamp}.md'
         report_path.write_text(titled_report, encoding='utf-8')
         paths['report'] = str(report_path)
@@ -291,7 +291,6 @@ class Orchestrator:
         logger.info(f"报告已保存: {paths['report']}")
 
         # 发布到 IMA 笔记
-        from .ima_publisher import publish_report
         pkwargs = {}
         if ima_folder:
             pkwargs['folder_id'] = ima_folder

@@ -17,7 +17,7 @@ from xueqiu_analyzer.models import CrawlResult
 from xueqiu_analyzer.evaluator import Evaluator
 from xueqiu_analyzer.analyzer import Analyzer
 from xueqiu_analyzer.orchestrator import Orchestrator
-from xueqiu_analyzer.ima_publisher import publish_report
+from xueqiu_analyzer.ima_publisher import publish_report, prepend_report_title
 
 
 def _setup_logging(verbose: bool = False):
@@ -178,8 +178,7 @@ def reanalyze(data, template, ima_folder, ima_folder_name):
     import time
     timestamp = time.strftime('%Y%m%d_%H%M%S')
     stock_name = getattr(crawl_result, 'name', crawl_result.symbol) or crawl_result.symbol
-    report_title = f"# {crawl_result.symbol} {stock_name} 投资分析报告\n\n"
-    titled_report = report_title + report
+    titled_report = prepend_report_title(report, crawl_result.symbol, stock_name)
     report_path = data_dir / f'{crawl_result.symbol}_report_{timestamp}.md'
     report_path.write_text(titled_report, encoding='utf-8')
 
