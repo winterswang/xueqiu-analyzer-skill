@@ -32,7 +32,8 @@ class Orchestrator:
 
     def run(self, symbol: str, max_rounds: int = None,
             data_path: str = None, template: str = 'analysis',
-            crawl_fn=None) -> AnalysisResult:
+            crawl_fn=None, ima_folder: str = None,
+            ima_folder_name: str = None) -> AnalysisResult:
         """
         完整流程：爬取→评估→补充→分析
 
@@ -42,6 +43,8 @@ class Orchestrator:
             data_path: 已有数据文件路径（跳过爬取）
             template: 分析模板名
             crawl_fn: 外部注入的爬取函数（用于解耦）
+            ima_folder: IMA 笔记本 ID
+            ima_folder_name: IMA 笔记本名称
 
         Returns:
             AnalysisResult
@@ -106,7 +109,10 @@ class Orchestrator:
         report = self.analyzer.analyze(crawl_result, evaluation)
 
         # 4. 保存
-        paths = self._save_results(symbol, crawl_result, evaluation, report)
+        paths = self._save_results(
+            symbol, crawl_result, evaluation, report,
+            ima_folder=ima_folder, ima_folder_name=ima_folder_name,
+        )
 
         # 5. 通知
         self._notify(symbol, evaluation, paths)
@@ -247,7 +253,9 @@ class Orchestrator:
 
     def _save_results(self, symbol: str, crawl_result: CrawlResult,
                       evaluation: EvaluationResult,
-                      report: str) -> dict:
+                      report: str,
+                      ima_folder: str = None,
+                      ima_folder_name: str = None) -> dict:
         """保存结果文件"""
         data_dir = get_data_dir()
         timestamp = time.strftime('%Y%m%d_%H%M%S')
@@ -272,12 +280,27 @@ class Orchestrator:
         eval_path.write_text(eval_report, encoding='utf-8')
         paths['evaluation'] = str(eval_path)
 
-        # 分析报告
+        # 分析报告 — 添加标题前缀
+        stock_name = getattr(crawl_result, 'name', symbol) or symbol
+        report_title = f"# {symbol} {stock_name} 投资分析报告\n\n"
+        titled_report = report_title + report
         report_path = data_dir / f'{symbol}_report_{timestamp}.md'
-        report_path.write_text(report, encoding='utf-8')
+        report_path.write_text(titled_report, encoding='utf-8')
         paths['report'] = str(report_path)
 
         logger.info(f"报告已保存: {paths['report']}")
+
+        # 发布到 IMA 笔记
+        from .ima_publisher import publish_report
+        pkwargs = {}
+        if ima_folder:
+            pkwargs['folder_id'] = ima_folder
+        if ima_folder_name:
+            pkwargs['folder_name'] = ima_folder_name
+        note_id = publish_report(titled_report, **pkwargs)
+        if note_id:
+            paths['ima_note_id'] = note_id
+            logger.info(f"IMA 笔记: note_id={note_id}")
         return paths
 
     def _format_evaluation_report(self, symbol: str,

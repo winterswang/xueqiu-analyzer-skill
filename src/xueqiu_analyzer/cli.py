@@ -17,6 +17,7 @@ from xueqiu_analyzer.models import CrawlResult
 from xueqiu_analyzer.evaluator import Evaluator
 from xueqiu_analyzer.analyzer import Analyzer
 from xueqiu_analyzer.orchestrator import Orchestrator
+from xueqiu_analyzer.ima_publisher import publish_report
 
 
 def _setup_logging(verbose: bool = False):
@@ -40,7 +41,9 @@ def cli(verbose):
 @click.option('--max-rounds', default=10, help='最大爬取轮次')
 @click.option('--data', default=None, help='已有数据文件路径（跳过爬取）')
 @click.option('--template', default='analysis', help='分析模板名')
-def analyze(symbol, max_rounds, data, template):
+@click.option('--ima-folder', default=None, help='IMA 笔记本 ID（默认：价值投资研究）')
+@click.option('--ima-folder-name', default=None, help='IMA 笔记本名称')
+def analyze(symbol, max_rounds, data, template, ima_folder, ima_folder_name):
     """完整分析流程：爬取→评估→分析"""
     config = get_config()
 
@@ -62,6 +65,8 @@ def analyze(symbol, max_rounds, data, template):
         data_path=data,
         template=template,
         crawl_fn=crawl_fn,
+        ima_folder=ima_folder,
+        ima_folder_name=ima_folder_name,
     )
 
     # 输出摘要
@@ -154,7 +159,9 @@ def evaluate(data):
 @cli.command()
 @click.option('--data', required=True, help='数据文件路径')
 @click.option('--template', default='analysis', help='分析模板名')
-def reanalyze(data, template):
+@click.option('--ima-folder', default=None, help='IMA 笔记本 ID（默认：价值投资研究）')
+@click.option('--ima-folder-name', default=None, help='IMA 笔记本名称')
+def reanalyze(data, template, ima_folder, ima_folder_name):
     """用已有数据重新分析"""
     with open(data, 'r', encoding='utf-8') as f:
         raw = json.load(f)
@@ -166,14 +173,27 @@ def reanalyze(data, template):
     analyzer = Analyzer(template=template)
     report = analyzer.analyze(crawl_result, evaluation)
 
-    # 保存
+    # 保存 — 添加标题前缀
     data_dir = get_data_dir()
     import time
     timestamp = time.strftime('%Y%m%d_%H%M%S')
+    stock_name = getattr(crawl_result, 'name', crawl_result.symbol) or crawl_result.symbol
+    report_title = f"# {crawl_result.symbol} {stock_name} 投资分析报告\n\n"
+    titled_report = report_title + report
     report_path = data_dir / f'{crawl_result.symbol}_report_{timestamp}.md'
-    report_path.write_text(report, encoding='utf-8')
+    report_path.write_text(titled_report, encoding='utf-8')
 
     click.echo(f"✅ 分析完成: {report_path}")
+
+    # 发布到 IMA 笔记
+    kwargs = {}
+    if ima_folder:
+        kwargs['folder_id'] = ima_folder
+    if ima_folder_name:
+        kwargs['folder_name'] = ima_folder_name
+    note_id = publish_report(titled_report, **kwargs)
+    if note_id:
+        click.echo(f"📝 IMA 笔记: note_id={note_id}")
 
 
 @cli.command('sentiment')
