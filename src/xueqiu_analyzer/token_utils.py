@@ -1,8 +1,43 @@
 """Token 估算与分批工具"""
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Lazy-loaded tokenizer
+_encoder = None
+_encoder_available = False
+
+
+def _get_encoder():
+    """获取 tokenizer encoder（lazy init，避免 tiktoken 未安装时崩溃）"""
+    global _encoder, _encoder_available
+    if _encoder is not None:
+        return _encoder
+    if not _encoder_available:
+        try:
+            import tiktoken
+            _encoder = tiktoken.get_encoding("cl100k_base")
+            _encoder_available = True
+            logger.debug("Token 估算: 使用 tiktoken cl100k_base")
+        except Exception:
+            logger.debug("Token 估算: tiktoken 不可用，回退到 len*2")
+            _encoder_available = False
+    return _encoder
+
 
 def estimate_tokens(text: str) -> int:
-    """保守估算 token 数: 字符数 × 2"""
+    """估算 token 数。
+
+    优先使用 tiktoken cl100k_base（比 len*2 精度提升 3-5x），
+    不可用时回退到 len*2（过度保守但安全——会创建更多批次而非丢失内容）。
+    """
+    enc = _get_encoder()
+    if enc is not None:
+        try:
+            return len(enc.encode(text))
+        except Exception:
+            pass
     return len(text) * 2
 
 

@@ -18,6 +18,9 @@ class Discussion:
     link: str = ""
     is_column: bool = False  # 是否专栏文章
     comments: List[str] = field(default_factory=list)
+    comment_count: int = 0
+    like_count: int = 0
+    forward_count: int = 0
 
 
 @dataclass
@@ -51,6 +54,9 @@ class Article:
     link: str = ""
     article_id: str = ""
     is_column: bool = True  # 专栏文章标记
+    comments: List[str] = field(default_factory=list)
+    comment_count: int = 0
+    like_count: int = 0
 
 
 @dataclass
@@ -129,7 +135,24 @@ class CrawlResult:
         )
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Persist grader result and quality report if present
+        gr = getattr(self, '_grader_result', None)
+        if gr is not None:
+            d['_grader_result'] = {
+                'themes': [{
+                    'name': t.name, 'bull_side': t.bull_side,
+                    'bear_side': t.bear_side,
+                    'key_item_ids': getattr(t, 'key_item_ids', []),
+                } for t in getattr(gr, 'themes', [])],
+                'consensus_points': getattr(gr, 'consensus_points', []),
+                'info_gaps': getattr(gr, 'info_gaps', []),
+                'quality_count': getattr(gr, 'quality_count', 0),
+            }
+        qr = getattr(self, '_quality_report', None)
+        if qr is not None:
+            d['_quality_report'] = qr.to_dict() if hasattr(qr, 'to_dict') else str(qr)
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> 'CrawlResult':
@@ -228,6 +251,91 @@ class AnalysisResult:
             template=data.get('template', 'analysis'),
             analyzed_at=data.get('analyzed_at', ''),
         )
+
+
+# ── Shared formatting ──────────────────────────────────────────────────────
+
+# Default content length limits for different use cases
+FORMAT_LIMITS_EVAL = {
+    "article": 2000,
+    "discussion": 500,
+    "news": 1500,
+    "notice": 1000,
+    "show_counts": False,
+    "show_comments": False,
+}
+FORMAT_LIMITS_FULL = {
+    "article": None,      # full content
+    "discussion": None,
+    "news": None,
+    "notice": None,
+    "show_counts": True,
+    "show_comments": True,
+}
+
+
+def format_content(result: CrawlResult, max_lengths: dict = None) -> str:
+    """Format crawled content as Markdown for LLM prompts.
+
+    Args:
+        result: CrawlResult with discussions/articles/news/notices
+        max_lengths: Dict controlling truncation & extras.
+            Keys: article, discussion, news, notice (int or None),
+                  show_counts (bool), show_comments (bool)
+
+    Returns:
+        Formatted Markdown string
+    """
+    limits = max_lengths or FORMAT_LIMITS_EVAL
+    parts = []
+
+    def _trunc(text, key):
+        lim = limits.get(key)
+        return text[:lim] if lim and len(text) > lim else text
+
+    if result.articles:
+        count = len(result.articles)
+        header = f"## 专栏文章（{count}篇）\n" if limits.get("show_counts") else "## 专栏文章\n"
+        parts.append(header)
+        for i, a in enumerate(result.articles, 1):
+            parts.append(f"### 文章{i}: {a.title}\n"
+                         f"作者: {a.author} | 时间: {a.time}\n\n"
+                         f"{_trunc(a.content, 'article')}\n")
+
+    if result.discussions:
+        count = len(result.discussions)
+        header = f"## 热门讨论（{count}条）\n" if limits.get("show_counts") else "## 热门讨论\n"
+        parts.append(header)
+        for i, d in enumerate(result.discussions, 1):
+            text = (f"### 讨论{i}\n"
+                    f"作者: {d.author} | 时间: {d.time}\n\n"
+                    f"{_trunc(d.content, 'discussion')}\n")
+            if limits.get("show_comments") and d.comments:
+                text += f"评论: {'; '.join(d.comments[:3])}\n"
+            parts.append(text)
+
+    if result.news:
+        count = len(result.news)
+        header = f"## 相关资讯（{count}条）\n" if limits.get("show_counts") else "## 相关资讯\n"
+        parts.append(header)
+        for i, n in enumerate(result.news, 1):
+            parts.append(f"### 资讯{i}: {n.title}\n"
+                         f"时间: {n.time} | 来源: {n.source}\n\n"
+                         f"{_trunc(n.content, 'news')}\n")
+
+    if result.notices:
+        count = len(result.notices)
+        header = f"## 公告（{count}条）\n" if limits.get("show_counts") else "## 公告\n"
+        parts.append(header)
+        for i, nt in enumerate(result.notices, 1):
+            text = f"### 公告{i}: {nt.title}\n时间: {nt.time}\n链接: {nt.link}\n"
+            if nt.pdf_link:
+                text += f"PDF: {nt.pdf_link}\n"
+            if nt.content:
+                text += f"\n{_trunc(nt.content, 'notice')}\n"
+            parts.append(text)
+
+    return '\n'.join(parts)
 
 
 # 评分标准常量

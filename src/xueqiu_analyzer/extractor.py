@@ -55,7 +55,7 @@ class ArticleContent:
 
 # ── Prompt 模板 ────────────────────────────────────────────────────────────
 
-EXTRACT_PROMPT = """你是一个专业的文章正文提取助手。请从网页 HTML 内容中提取文章信息。
+EXTRACT_PROMPT = """你是一个专业的文章正文提取助手。请从网页文本内容中提取文章信息。
 
 ## 输出要求
 返回 JSON 格式，包含以下字段：
@@ -77,14 +77,15 @@ EXTRACT_PROMPT = """你是一个专业的文章正文提取助手。请从网页
 - 雪球文章可能有"登录后阅读全文"提示，如果正文被截断，请在 content 中标注"[登录后内容截断]"
 - 公告内容可能很短，不需要展开
 - 如果是 403 或需要登录的页面，content 设为 "[需要登录]"
+- 输入已是提取后的纯文本内容，无需处理 HTML 标签
 
-请提取以下网页内容：
+请提取以下内容：
 
 """
 
-EXTRACT_USER_PROMPT = """## 待提取的网页 HTML 内容
+EXTRACT_USER_PROMPT = """## 待提取的文章文本
 
-（见下方 HTML）
+（见下方文本）
 
 """
 
@@ -126,9 +127,9 @@ def _repair_truncated_json(s: str) -> str:
 
 # ── DeepSeek API 调用 ────────────────────────────────────────────────────────
 
-def call_deepseek_extract(html_content: str, url: str) -> ArticleContent:
-    """调用 DeepSeek API 提取文章内容"""
-    user_content = EXTRACT_USER_PROMPT + f"\n## 原文链接\n{url}\n\n## HTML 内容\n{html_content[:15000]}"
+def call_deepseek_extract(text_content: str, url: str) -> ArticleContent:
+    """调用 DeepSeek API 提取文章内容（输入为纯文本，非 HTML）"""
+    user_content = EXTRACT_USER_PROMPT + f"\n## 原文链接\n{url}\n\n## 文本内容\n{text_content[:15000]}"
 
     payload = {
         "model": DEEPSEEK_MODEL,
@@ -264,18 +265,21 @@ def fetch_page_html(url: str, cookies: list = None) -> str:
 
 
 def _clean_html(html: str) -> str:
-    """清理无用的 HTML 标签和内容"""
+    """清理无用的 HTML 标签，返回纯文本"""
     import re
     # 移除 script, style, nav, footer, aside 等标签及其内容
-    html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r'<nav[^>]*>.*?</nav>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r'<footer[^>]*>.*?</footer>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r'<aside[^>]*>.*?</aside>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r'<header[^>]*>.*?</header>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r'<div class="[^"]*(?:comment|related|sidebar|ad|advertisement)[^"]*"[^>]*>.*?</div>',
-                  '', html, flags=re.DOTALL | re.IGNORECASE)
-    return html
+    text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<nav[^>]*>.*?</nav>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<footer[^>]*>.*?</footer>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<aside[^>]*>.*?</aside>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<header[^>]*>.*?</header>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<div class="[^"]*(?:comment|related|sidebar|ad|advertisement)[^"]*"[^>]*>.*?</div>',
+                  '', text, flags=re.DOTALL | re.IGNORECASE)
+    # 移除 HTML 标签转为纯文本
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 
 # ── 主提取器 ──────────────────────────────────────────────────────────────
@@ -295,14 +299,16 @@ class ScrapingExtractor:
         """
         self.cookies = cookies or []
 
-    def extract(self, url: str, raw_html: str = None, fallback_selector: str = None) -> ArticleContent:
+    def extract(self, url: str, raw_text: str = None, raw_html: str = None,
+                fallback_selector: str = None) -> ArticleContent:
         """
         提取文章正文
 
         Args:
             url: 文章详情页 URL
-            raw_html: 可选，预渲染的页面 HTML（传入则跳过 fetch_page_html）
-            fallback_selector: 可选的 fallback CSS selector（保留兼容）
+            raw_text: 可选，预提取的纯文本内容（优先使用，内存占用远小于 raw_html）
+            raw_html: 可选，预渲染的页面 HTML（向后兼容，会转为纯文本）
+            fallback_selector: 可选的 fallback CSS selector
 
         Returns:
             ArticleContent: 提取结果
@@ -310,18 +316,21 @@ class ScrapingExtractor:
         logger.info(f"使用 LLM 提取文章: {url}")
 
         try:
-            # Step 1: 获取 HTML（优先用传入的 raw_html）
-            if raw_html:
-                html = _clean_html(raw_html)
+            # Step 1: 获取文本内容
+            if raw_text:
+                text = raw_text
+            elif raw_html:
+                text = _clean_html(raw_html)
             else:
                 html = fetch_page_html(url, cookies=self.cookies)
+                text = _clean_html(html)
 
-            if not html or len(html) < 100:
-                logger.warning(f"页面 HTML 为空或太短: {url}")
+            if not text or len(text) < 50:
+                logger.warning(f"页面文本为空或太短: {url}")
                 return self._fallback(url, fallback_selector)
 
             # Step 2: DeepSeek 提取
-            result = call_deepseek_extract(html, url)
+            result = call_deepseek_extract(text, url)
 
             if not result.is_valid():
                 logger.warning(f"DeepSeek 提取结果无效，尝试 fallback: {url}")

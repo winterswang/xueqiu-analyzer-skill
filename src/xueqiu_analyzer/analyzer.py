@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from .models import CrawlResult, EvaluationResult
+from .models import CrawlResult, EvaluationResult, format_content, FORMAT_LIMITS_FULL
 from .llm_client import LLMClient
 from .config import get_config
 
@@ -111,42 +111,8 @@ class Analyzer:
         return prompt
 
     def _format_content(self, data: CrawlResult) -> str:
-        """格式化完整内容（分析用，比评估更详细）"""
-        parts = []
-
-        if data.articles:
-            parts.append(f"## 专栏文章（{len(data.articles)}篇）\n")
-            for i, a in enumerate(data.articles, 1):
-                parts.append(f"### 文章{i}: {a.title}\n"
-                             f"作者: {a.author} | 时间: {a.time}\n\n"
-                             f"{a.content}\n")
-
-        if data.discussions:
-            parts.append(f"## 热门讨论（{len(data.discussions)}条）\n")
-            for i, d in enumerate(data.discussions, 1):
-                text = f"### 讨论{i}\n作者: {d.author} | 时间: {d.time}\n\n{d.content}\n"
-                if d.comments:
-                    text += f"评论: {'; '.join(d.comments[:3])}\n"
-                parts.append(text)
-
-        if data.news:
-            parts.append(f"## 相关资讯（{len(data.news)}条）\n")
-            for i, n in enumerate(data.news, 1):
-                parts.append(f"### 资讯{i}: {n.title}\n"
-                             f"时间: {n.time} | 来源: {n.source}\n\n"
-                             f"{n.content}\n")
-
-        if data.notices:
-            parts.append(f"## 公告（{len(data.notices)}条）\n")
-            for i, nt in enumerate(data.notices, 1):
-                text = f"### 公告{i}: {nt.title}\n时间: {nt.time}\n"
-                if nt.pdf_link:
-                    text += f"PDF: {nt.pdf_link}\n"
-                if nt.content:
-                    text += f"\n{nt.content}\n"
-                parts.append(text)
-
-        return '\n'.join(parts)
+        """格式化完整内容（分析用，不截断）"""
+        return format_content(data, FORMAT_LIMITS_FULL)
 
     @staticmethod
     def _default_prompt_template() -> str:

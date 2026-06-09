@@ -18,6 +18,8 @@ from xueqiu_analyzer.evaluator import Evaluator
 from xueqiu_analyzer.analyzer import Analyzer
 from xueqiu_analyzer.orchestrator import Orchestrator
 from xueqiu_analyzer.ima_publisher import publish_report, prepend_report_title
+from xueqiu_analyzer.csv_exporter import export_csv, export_csv_from_json
+from xueqiu_analyzer.ima_kb_uploader import upload_file, upload_csv_set, list_knowledge_bases
 
 
 def _setup_logging(verbose: bool = False):
@@ -409,6 +411,221 @@ def grade(data, threshold):
         click.echo(f"\nTop {len(high)} 高质量内容:")
         for h in high:
             click.echo(f"  ⭐ [{h.combined}分] {h.summary[:80]}")
+
+
+@cli.command('export-csv')
+@click.argument('symbol', required=False)
+@click.option('--data', default=None, help='已有 JSON 数据文件路径')
+@click.option('--output-dir', '-o', default=None, help='CSV 输出目录（默认 ~/.xueqiu_csv/{SYMBOL}/）')
+@click.option('--max-pages', default=5, help='最大翻页数（爬取模式时使用）')
+@click.option('--max-articles', default=10, help='最大文章数')
+@click.option('--days', default=0, help='只看最近 N 天（0=不限）')
+def export_csv_cmd(symbol, data, output_dir, max_pages, max_articles, days):
+    """导出爬取数据为 CSV 文件
+
+    两种模式：
+    1. 从已有 JSON 数据导出: export-csv --data data.json
+    2. 先爬取再导出: export-csv SYMBOL
+
+    生成 4 个 CSV: discussions / articles / news / notices
+    """
+    import time as _time
+
+    if data:
+        # 模式 1: 从 JSON 导出
+        if output_dir:
+            out_dir = Path(output_dir)
+        else:
+            out_dir = Path("~/.xueqiu_csv").expanduser()
+
+        files = export_csv_from_json(data, out_dir)
+        click.echo(f"✅ CSV 导出完成 ({len(files)} 文件):")
+        for csv_type, path in sorted(files.items()):
+            click.echo(f"   {csv_type}: {path}")
+        return
+
+    if not symbol:
+        click.echo("❌ 请提供股票代码或 --data 参数", err=True)
+        sys.exit(1)
+
+    # 模式 2: 爬取 + 导出
+    try:
+        from xueqiu_analyzer.crawler import XueqiuCrawler
+    except ImportError:
+        click.echo("❌ 未安装爬虫模块", err=True)
+        sys.exit(1)
+
+    root_dir = output_dir and Path(output_dir) or Path("~/.xueqiu_csv").expanduser()
+    out_dir = root_dir / symbol.upper() / _time.strftime("%Y%m%d_%H%M%S")
+
+    click.echo(f"🕷️ 爬取 {symbol} ...")
+    config = get_config()
+    crawler = XueqiuCrawler(config.get("crawler", {}))
+    result = crawler.crawl(symbol, max_pages=max_pages,
+                           max_articles=max_articles, days=days)
+
+    click.echo(f"📊 导出 CSV → {out_dir}")
+    files = export_csv(result, out_dir)
+
+    click.echo(f"\n✅ CSV 导出完成 ({len(files)} 文件):")
+    for csv_type, path in sorted(files.items()):
+        size = Path(path).stat().st_size
+        click.echo(f"   {csv_type}: {path} ({size:,} bytes)")
+
+
+@cli.command('upload-csv')
+@click.option('--csv-files', help='CSV 文件目录或 export_csv 返回的 JSON 文件')
+@click.option('--kb-id', required=True, help='IMA 知识库 ID')
+@click.option('--folder-id', default=None, help='IMA 知识库文件夹 ID')
+@click.option('--file', default=None, multiple=True, help='单个文件上传（可多次使用）')
+def upload_csv(csv_files, kb_id, folder_id, file):
+    """上传 CSV 文件到 IMA 知识库
+
+    示例：
+      upload-csv --csv-files ~/.xueqiu_csv/TCOM/20260101_120000 --kb-id KB123
+      upload-csv --file data.csv --file report.pdf --kb-id KB123
+    """
+    import json as _json
+
+    if not csv_files and not file:
+        click.echo("❌ 请指定 --csv-files 或 --file", err=True)
+        sys.exit(1)
+
+    uploaded = []
+    failed = []
+
+    if file:
+        for f in file:
+            try:
+                mid = upload_file(f, kb_id, folder_id)
+                uploaded.append((f, mid))
+                click.echo(f"✅ {Path(f).name} → media_id={mid[:40]}...")
+            except Exception as e:
+                failed.append((f, str(e)))
+                click.echo(f"❌ {Path(f).name}: {e}")
+
+    if csv_files:
+        csv_path = Path(csv_files)
+        if csv_path.is_dir():
+            csv_set = {}
+            for f in csv_path.glob("*.csv"):
+                stem = f.stem
+                for csv_type in ["discussions", "articles", "news", "notices"]:
+                    if stem.endswith(f"_{csv_type}"):
+                        csv_set[csv_type] = str(f)
+                        break
+                else:
+                    csv_set[stem] = str(f)
+            if csv_set:
+                result = upload_csv_set(csv_set, kb_id, folder_id)
+                for mid in result.get("success", []):
+                    uploaded.append(("batch", mid))
+                for ftype, err in result.get("failed", {}).items():
+                    failed.append((ftype, err))
+                    click.echo(f"❌ {ftype}: {err}")
+                click.echo(f"✅ 批量上传: {len(result.get('success',[]))} 成功, {len(result.get('failed',{}))} 失败")
+            else:
+                click.echo("⚠️ 目录中未找到 CSV 文件")
+        elif csv_path.suffix == ".json":
+            with open(csv_path) as f:
+                manifest = _json.load(f)
+            if isinstance(manifest, dict):
+                result = upload_csv_set(manifest, kb_id, folder_id)
+                for mid in result.get("success", []):
+                    uploaded.append(("batch", mid))
+                for ftype, err in result.get("failed", {}).items():
+                    failed.append((ftype, err))
+                    click.echo(f"❌ {ftype}: {err}")
+                click.echo(f"✅ 批量上传: {len(result.get('success',[]))} 成功, {len(result.get('failed',{}))} 失败")
+        else:
+            click.echo(f"❌ --csv-files 需要是 CSV 目录或 JSON 文件，不是: {csv_path}", err=True)
+
+    click.echo(f"\n📊 上传: {len(uploaded)} 成功, {len(failed)} 失败")
+
+
+@cli.command('list-kb')
+def list_kb():
+    """列出可用的 IMA 知识库"""
+    try:
+        kbs = list_knowledge_bases()
+        click.echo(f"\n可用知识库 ({len(kbs)}):\n")
+        for kb in kbs:
+            click.echo(f"  📚 {kb.get('name', 'N/A')}")
+            click.echo(f"     ID: {kb.get('id', 'N/A')}")
+    except RuntimeError as e:
+        click.echo(f"❌ {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ 查询失败: {e}", err=True)
+        click.echo("\n请确认 IMA 凭证已配置:")
+        click.echo("  ~/.config/ima/client_id")
+        click.echo("  ~/.config/ima/api_key")
+        sys.exit(1)
+
+
+@cli.command('crawl-to-ima')
+@click.argument('symbol')
+@click.option('--kb-id', required=True, help='IMA 知识库 ID')
+@click.option('--folder-id', default=None, help='IMA 知识库文件夹 ID')
+@click.option('--max-pages', default=5, help='最大翻页数')
+@click.option('--max-articles', default=10, help='最大文章数')
+@click.option('--days', default=0, help='只看最近 N 天（0=不限）')
+@click.option('--output-dir', '-o', default=None, help='CSV 输出目录（默认 ~/.xueqiu_csv/{SYMBOL}/）')
+def crawl_to_ima(symbol, kb_id, folder_id, max_pages, max_articles, days, output_dir):
+    """完整流水线: 爬取 → CSV导出 → IMA知识库上传
+
+    一键将雪球数据同步到 IMA 知识库。
+
+    示例:
+      crawl-to-ima TCOM --kb-id KB123456
+      crawl-to-ima AAPL --kb-id KB123 --max-pages 10 --days 30
+    """
+    import time as _time
+
+    try:
+        from xueqiu_analyzer.crawler import XueqiuCrawler
+    except ImportError:
+        click.echo("❌ 未安装爬虫模块", err=True)
+        sys.exit(1)
+
+    root_dir = output_dir and Path(output_dir) or Path("~/.xueqiu_csv").expanduser()
+    out_dir = root_dir / symbol.upper() / _time.strftime("%Y%m%d_%H%M%S")
+
+    # Step 1: 爬取
+    click.echo(f"🕷️ [1/3] 爬取雪球: {symbol}")
+    config = get_config()
+    crawler = XueqiuCrawler(config.get("crawler", {}))
+    result = crawler.crawl(symbol, max_pages=max_pages,
+                           max_articles=max_articles, days=days)
+
+    total = (len(result.discussions) + len(result.articles) +
+             len(result.news) + len(result.notices))
+    click.echo(f"   爬取完成: {total} 条内容")
+
+    # Step 2: 导出 CSV
+    click.echo(f"📊 [2/3] 导出 CSV")
+    csv_files = export_csv(result, out_dir)
+    for csv_type, path in sorted(csv_files.items()):
+        size = Path(path).stat().st_size
+        click.echo(f"   {csv_type}: {size:,} bytes")
+
+    # Step 3: 上传 IMA
+    click.echo(f"☁️ [3/3] 上传 IMA 知识库")
+    result = upload_csv_set(csv_files, kb_id, folder_id)
+    ok = len(result.get("success", []))
+    bad = len(result.get("failed", {}))
+    if ok:
+        click.echo(f"\n✅ 上传完成: {ok} 个文件已入库")
+    if bad:
+        click.echo(f"⚠️ {bad} 个文件上传失败")
+        for ftype, err in result["failed"].items():
+            click.echo(f"   {ftype}: {err}")
+    if not ok and not bad:
+        click.echo(f"\n⚠️ 无 CSV 文件可上传")
+        return
+    if bad:
+        click.echo(f"   CSV 文件已保存在: {out_dir}")
+        sys.exit(1)
 
 
 def main():

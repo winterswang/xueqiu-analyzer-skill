@@ -11,7 +11,7 @@ from typing import Optional
 from pathlib import Path
 
 from .models import (
-    CrawlResult, EvaluationResult, SCORING_CRITERIA
+    CrawlResult, EvaluationResult, SCORING_CRITERIA, format_content, FORMAT_LIMITS_EVAL
 )
 from .llm_client import LLMClient
 from .config import get_config
@@ -96,42 +96,8 @@ class Evaluator:
         return prompt
 
     def _format_content(self, data: CrawlResult) -> str:
-        """格式化爬取内容"""
-        parts = []
-
-        if data.articles:
-            parts.append("## 专栏文章\n")
-            for i, a in enumerate(data.articles, 1):
-                parts.append(f"### 文章{i}: {a.title}\n"
-                             f"作者: {a.author} | 时间: {a.time}\n\n"
-                             f"{a.content[:2000]}\n")
-
-        if data.discussions:
-            parts.append("## 热门讨论\n")
-            for i, d in enumerate(data.discussions, 1):
-                parts.append(f"### 讨论{i}\n"
-                             f"作者: {d.author} | 时间: {d.time}\n\n"
-                             f"{d.content[:500]}\n")
-
-        if data.news:
-            parts.append("## 相关资讯\n")
-            for i, n in enumerate(data.news, 1):
-                parts.append(f"### 资讯{i}: {n.title}\n"
-                             f"时间: {n.time} | 来源: {n.source}\n\n"
-                             f"{n.content[:1500]}\n")
-
-        if data.notices:
-            parts.append("## 公告\n")
-            for i, nt in enumerate(data.notices, 1):
-                parts.append(f"### 公告{i}: {nt.title}\n"
-                             f"时间: {nt.time}\n"
-                             f"链接: {nt.link}\n")
-                if nt.pdf_link:
-                    parts.append(f"PDF: {nt.pdf_link}\n")
-                if nt.content:
-                    parts.append(f"\n{nt.content[:1000]}\n")
-
-        return '\n'.join(parts)
+        """格式化爬取内容（评估用，截断模式）"""
+        return format_content(data, FORMAT_LIMITS_EVAL)
 
     def _parse_result(self, response: str) -> EvaluationResult:
         """

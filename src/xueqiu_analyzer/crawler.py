@@ -1161,21 +1161,86 @@ class XueqiuCrawler:
     def _crawl_article_detail(self, page: Page, url: str) -> Optional[Article]:
         """爬取雪球文章详情
 
-        优先使用 ScrapingExtractor（DeepSeek LLM）提取正文，
-        失败时回退到原有 CSS selector 逻辑。
+        修复: 从 DOM 直接提取纯文本（~5KB）而非 page.content() 的原始 HTML（~500KB-2MB），
+        避免多篇文章同时处理时内存爆炸。
         """
+        detail_page = None
         try:
             detail_page = page.context.new_page()
             detail_page.goto(url, timeout=30000)
             time.sleep(2)
             self._close_modal(detail_page)
 
-            # ── Phase 1: DeepSeek LLM 提取 ───────────────────────────
-            raw_html = detail_page.content()
-            result = self.extractor.extract(url, raw_html=raw_html)
+            # ── 从 DOM 提取标题（单独提取，避免 LLM 无法区分）──
+            dom_title = detail_page.evaluate('''() => {
+                const selectors = [
+                    '.article__bd__title',
+                    'h1.article-title',
+                    'h1',
+                    '[class*="article"] h1',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.innerText && el.innerText.trim().length > 2) {
+                        return el.innerText.trim();
+                    }
+                }
+                return '';
+            }''')
+
+            # ── 从 DOM 提取纯文本（替代 page.content()） ──
+            text_content = detail_page.evaluate('''() => {
+                // 尝试定位雪球文章正文区域
+                const selectors = [
+                    '.article__bd',
+                    '.article__bd__detail',
+                    'article',
+                    '.article-content',
+                    '.detail-content',
+                    '.post-content',
+                    '[class*="article"]',
+                    'body',
+                ];
+                let el = null;
+                for (const sel of selectors) {
+                    el = document.querySelector(sel);
+                    if (el && el.innerText && el.innerText.trim().length > 100) break;
+                }
+                return el ? el.innerText.trim() : (document.body ? document.body.innerText.trim() : '');
+            }''')
+
+            detail_page.close()
+            detail_page = None
+
+            if not text_content or len(text_content) < 50:
+                return None
+
+            # ── Phase 1: DeepSeek LLM 提取（传入纯文本，非 HTML）──
+            result = self.extractor.extract(url, raw_text=text_content)
+            # 标题: DOM 直接提取（h1/.article__bd__title）> LLM 结果 > 正文首行
+            # 有些雪球文章（引用帖）没有独立标题元素，首句即标题
+            if not dom_title and text_content:
+                import re as _re
+                # 取前10行，找第一条有意义的中文行
+                first_lines = [l.strip() for l in text_content.split('\n')[:10]]
+                for fl in first_lines:
+                    if not fl or len(fl) < 4:
+                        continue
+                    # 跳过 "发布于" / "来自" / 纯日期 / 纯英文用户名行
+                    if fl.startswith(('发布于', '来自', '关注', '修改')):
+                        continue
+                    if not _re.search(r'[\u4e00-\u9fff]', fl):
+                        continue
+                    # 剥离前导股票代码 $xxx(SH/SZ/NYSE:...)$ 和 @mention
+                    fl = _re.sub(r'^\u0024[^\u0024]+\u0024\s*', '', fl)
+                    fl = _re.sub(r'^@\S+\s*', '', fl).strip()
+                    if fl and len(fl) > 3 and not _re.match(r'^\d+[-/]', fl):
+                        # 截断到首个句子分隔符
+                        dom_title = _re.split(r'[。！？；：，,.]', fl)[0].strip()[:200]
+                        break
+            article_title = dom_title or (result.title[:200] if result.title else '')
 
             if result.is_valid():
-                # 解析 symbols（可能是 JSON 字符串或列表）
                 import json as _json
                 try:
                     symbols = _json.loads(result.symbols) if isinstance(result.symbols, str) else result.symbols
@@ -1184,9 +1249,8 @@ class XueqiuCrawler:
                 except Exception:
                     symbols = []
                 article_id = url.rstrip('/').split('/')[-1] if '/' in url else ''
-                detail_page.close()
                 return Article(
-                    title=result.title[:200] if result.title else '',
+                    title=article_title,
                     author=result.author,
                     content=result.content[:10000],
                     time=result.time,
@@ -1194,40 +1258,29 @@ class XueqiuCrawler:
                     article_id=article_id,
                 )
 
-            # ── Phase 2: Fallback 原有 CSS selector ──────────────────
-            title = detail_page.evaluate('''() => {
-                const h1 = document.querySelector('.article__bd__title');
-                return h1 ? h1.innerText.trim() : document.title;
-            }''')
-            author = detail_page.evaluate('''() => {
-                const el = document.querySelector('.article__bd__from a, .user-name, [class*="author"]');
-                return el ? el.innerText.trim() : '';
-            }''')
-            time_str = detail_page.evaluate('''() => {
-                const el = document.querySelector('.article__bd__time, [class*="date"], time');
-                return el ? el.innerText.trim() : '';
-            }''')
-            content = detail_page.evaluate('''() => {
-                const article = document.querySelector('.article__bd__detail');
-                return article ? article.innerText.trim() : '';
-            }''')
-            detail_page.close()
+            # ── Phase 2: Fallback — 从 DOM 直接提取属性 ──
+            # LLM 提取失败时，用 DOM 标题 + 原始文本
+            title = article_title or (text_content[:500].split('\n')[0].strip()[:200])
+            content = text_content[:10000]
+            content = text_content[:10000]
+            article_id = url.rstrip('/').split('/')[-1] if '/' in url else ''
+            return Article(
+                title=title,
+                author='',
+                content=content,
+                time='',
+                link=url,
+                article_id=article_id,
+            )
 
-            if content and len(content) > 50:
-                article_id = url.rstrip('/').split('/')[-1] if '/' in url else ''
-                return Article(
-                    title=title[:200],
-                    author=author,
-                    content=content[:10000],
-                    time=time_str,
-                    link=url,
-                    article_id=article_id,
-                )
-        except Exception:
-            try:
-                detail_page.close()
-            except Exception:
-                pass
+        except Exception as e:
+            self.logger.warning(f"文章提取失败: {url} — {e}")
+        finally:
+            if detail_page:
+                try:
+                    detail_page.close()
+                except Exception:
+                    pass
         return None
 
     def _extract_notice_summary_from_title(self, notice) -> str:

@@ -383,31 +383,89 @@ class Orchestrator:
 
     def _send_feishu(self, symbol: str, evaluation: EvaluationResult,
                      paths: dict):
-        """发送飞书通知"""
-        import os
-
-        target = os.environ.get(
-            'FEISHU_TARGET_USER',
-            self.config.get('notify', {}).get('feishu_target', ''))
-
-        message = (
-            f"📊 **{symbol} 雪球分析完成**\n\n"
-            f"**评分**: {evaluation.effective_score}/"
-            f"{200 + evaluation.financial_bonus}\n"
-            f"**充分性**: {evaluation.sufficiency}\n"
-        )
-
-        # 使用 PID 避免并发运行时互相覆盖
-        pid = os.getpid()
-        pending_path = Path(f'/tmp/pending_feishu_xueqiu_analysis_{pid}.json')
+        """发送飞书通知 — 直接调用 API，不经过文件 IPC"""
         try:
-            payload = {
-                'channel': 'feishu',
-                'target': target,
-                'message': message,
-            }
-            pending_path.write_text(
-                json.dumps(payload, ensure_ascii=False), encoding='utf-8')
-            logger.info(f"飞书通知已准备: {pending_path}")
+            msg = (
+                f"📊 {symbol} 雪球分析完成\n\n"
+                f"评分: {evaluation.effective_score}/"
+                f"{200 + evaluation.financial_bonus}\n"
+                f"充分性: {evaluation.sufficiency}\n"
+            )
+            report_path = paths.get('report', '')
+            if report_path:
+                msg += f"\n报告: {Path(report_path).name}"
+
+            _send_feishu_text(msg)
+            logger.info("飞书通知已发送")
         except Exception as e:
-            logger.warning(f"飞书通知准备失败: {e}")
+            logger.warning(f"飞书通知发送失败: {e}")
+
+
+# ── Feishu direct API helpers ──────────────────────────────────────────────
+
+import os as _os
+import requests as _requests
+
+_FEISHU_USER_ID = _os.environ.get(
+    "FEISHU_USER_OPEN_ID", "ou_10fd623ef35ada42d7ad772c34c216af"
+)
+
+
+def _get_feishu_credentials():
+    """Get Feishu app credentials from env or OpenClaw config."""
+    app_id = _os.environ.get("FEISHU_APP_ID", "")
+    app_secret = _os.environ.get("FEISHU_APP_SECRET", "")
+    if app_id and app_secret:
+        return app_id, app_secret
+
+    try:
+        config_path = Path(_os.path.expanduser("~/.openclaw/openclaw.json"))
+        with open(config_path) as f:
+            cfg = json.load(f)
+        feishu = cfg.get("channels", {}).get("feishu", {})
+        app_id = feishu.get("appId", "")
+        app_secret = feishu.get("appSecret", "")
+        if app_id and app_secret:
+            return app_id, app_secret
+    except Exception:
+        pass
+
+    return "", ""
+
+
+def _send_feishu_text(text: str, user_open_id: str = None):
+    """Send plain text message via Feishu API."""
+    app_id, app_secret = _get_feishu_credentials()
+    if not app_id or not app_secret:
+        logger.warning("Feishu credentials not configured, skip notification")
+        return
+
+    # Get tenant token
+    resp = _requests.post(
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        json={"app_id": app_id, "app_secret": app_secret},
+        timeout=10,
+    )
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"Feishu token error: {data}")
+    token = data["tenant_access_token"]
+
+    # Send message
+    target_id = user_open_id or _FEISHU_USER_ID
+    resp = _requests.post(
+        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "receive_id": target_id,
+            "msg_type": "text",
+            "content": json.dumps({"text": text}),
+        },
+        timeout=15,
+    )
+    result = resp.json()
+    if result.get("code") != 0:
+        raise RuntimeError(f"Feishu send error: {result}")
