@@ -99,6 +99,23 @@ def _is_beyond_time_window(time_str: str, days: int) -> bool:
     return False
 
 
+# ════════════════════════════════════════════════════════════
+# Text cleaning utilities
+# ════════════════════════════════════════════════════════════
+
+_PUA_CLEAN_RE = re.compile(r'[\ue000-\uf8ff\u2000-\u206f]+')
+
+
+def clean_pua(text: str) -> str:
+    """Strip Unicode PUA and invisible formatting chars from text.
+
+    Removes icon-font Private Use Area characters (U+E000–U+F8FF)
+    and invisible Unicode formatting ranges (U+2000–U+206F) that
+    xueqiu injects into DOM text content.
+    """
+    return _PUA_CLEAN_RE.sub('', text)
+
+
 class XueqiuCrawler:
     """雪球数据爬虫 — 只管爬，输出标准 CrawlResult"""
 
@@ -233,7 +250,7 @@ class XueqiuCrawler:
                     for item in _opencli_discs:
                         result.discussions.append(Discussion(
                             author=item.get('author', ''),
-                            content=(item.get('text', '') or item.get('content', ''))[:500],
+                            content=clean_pua((item.get('text', '') or item.get('content', ''))[:500]),
                             time=item.get('created_at', ''),
                             link=item.get('url', ''),
                             is_column=False,
@@ -655,7 +672,7 @@ class XueqiuCrawler:
                             break
                         discussions.append(Discussion(
                             author=item.get('author', ''),
-                            content=(item.get('text', '') or '')[:500],
+                            content=clean_pua((item.get('text', '') or '')[:500]),
                             time=item.get('created_at', ''),
                             link=item.get('url', ''),
                             is_column=False,
@@ -905,6 +922,7 @@ class XueqiuCrawler:
             content = re.sub(r'转发.*$', '', content, flags=re.MULTILINE)
             content = re.sub(r'赞.*$', '', content, flags=re.MULTILINE)
             content = re.sub(r'收藏.*$', '', content, flags=re.MULTILINE)
+            content = clean_pua(content)
             content = content.strip()[:500]
 
             # 检测专栏：来源=雪球（平台发布的专栏文章）
@@ -959,9 +977,7 @@ class XueqiuCrawler:
             # 去掉"来自新闻"等噪音
             content = re.sub(r'来自(新闻|公告|研报|媒体|AI)\s*', '', content)
             # 去掉互动统计噪音
-            content = re.sub(
-                r'[\ue000-\uf8ff\u2000-\u206f]', '', content
-            ).strip()
+            content = clean_pua(content).strip()
             content = content[:3000]
 
             # 真正的外部链接（文章详情页，非股票页自身）
@@ -1373,7 +1389,7 @@ class XueqiuCrawler:
                 if href and not href.startswith('javascript'):
                     link = 'https://xueqiu.com' + href if href.startswith('/') else href
                     break
-            clean_title = re.sub(r'[\ue000-\uf8ff\u2000-\u206f]', '', text).strip()[:200]
+            clean_title = clean_pua(text).strip()[:200]
             notice = Notice(title=clean_title, link=link)
             time_match = re.search(
                 r'(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天|\d{2}:\d{2}|\d{4}-\d{2}-\d{2})',
