@@ -817,15 +817,19 @@ class XueqiuCrawler:
         # ── Tier 1: opencli (zero-WAF via Chrome extension) ──
         try:
             from .fetcher_opencli import is_available, fetch_notices
+            from .sec_fetcher import build_sec_summary, extract_accession
             if is_available():
                 items = fetch_notices(symbol, limit=min(max_pages * 10, 50))
                 if items:
                     for item in items:
+                        title = item.get('title', '')[:200]
                         notices.append(Notice(
-                            title=item.get('title', '')[:200],
+                            title=title,
                             time=item.get('created_at', ''),
                             notice_type=item.get('type', ''),
                             link=item.get('url', ''),
+                            content=build_sec_summary(title, item.get('created_at', ''))
+                                    if extract_accession(title) else '',
                         ))
                     self.logger.info(f"  opencli: {len(notices)} 条公告")
                     return notices
@@ -890,11 +894,20 @@ class XueqiuCrawler:
                     # 提取公告类型：[类型] 格式 → _detect_notice_type fallback
                     type_match = re.search(r'\[(.+?)\]', title)
                     nt_type = type_match.group(1) if type_match else _detect_notice_type(title)
+                    # 若为 SEC filing，构建结构化摘要作为 content
+                    sec_content = ''
+                    try:
+                        from .sec_fetcher import build_sec_summary, extract_accession
+                        if extract_accession(title):
+                            sec_content = build_sec_summary(title, ts)
+                    except ImportError:
+                        pass
                     notices.append(Notice(
                         title=title[:300],
                         link=link,
                         time=ts,
                         notice_type=nt_type,
+                        content=sec_content,
                     ))
                 self.logger.info(f"  公告 API 页 {page_num}: {len(items)} 条 (累计 {len(notices)} 条)")
                 # count-based stop

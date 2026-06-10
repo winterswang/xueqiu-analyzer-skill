@@ -119,6 +119,71 @@ def test_high_value_forms_excludes_low_value():
     assert 'S-1' not in HIGH_VALUE_FORMS
 
 
+# ── extract_file_size ────────────────────────────────────────
+
+@pytest.mark.parametrize("title,expected", [
+    ("6-K ... Size: 212 KB", "212 KB"),
+    ("20-F ... Size: 15 MB", "15 MB"),
+    ("4 ... Size: 5 KB", "5 KB"),
+    ("144 ... Size: 4 KB", "4 KB"),
+    ("3 ... Size: 10 KB", "10 KB"),
+])
+def test_extract_file_size(title, expected):
+    from xueqiu_analyzer.sec_fetcher import extract_file_size
+    assert extract_file_size(title) == expected
+
+
+def test_extract_file_size_returns_empty():
+    from xueqiu_analyzer.sec_fetcher import extract_file_size
+    assert extract_file_size("No size here") == ""
+    assert extract_file_size("") == ""
+
+
+# ── build_sec_url ────────────────────────────────────────────
+
+def test_build_sec_url():
+    from xueqiu_analyzer.sec_fetcher import build_sec_url
+    url = build_sec_url("0001104659-26-067186")
+    assert "sec.gov" in url
+    assert "1104659" in url
+    assert "000110465926067186" in url
+    assert "0001104659-26-067186-index.htm" in url
+    assert url.startswith("https://www.sec.gov/Archives/edgar/data/")
+
+
+# ── build_sec_summary ────────────────────────────────────────
+
+REAL_6K_TITLE = (
+    "6-K Report of foreign issuer [Rules 13a-16 and 15d-16] "
+    "Accession Number: 0001104659-26-067186 Act: 34 Size: 212 KB"
+)
+
+
+def test_build_sec_summary_contains_key_fields():
+    from xueqiu_analyzer.sec_fetcher import build_sec_summary
+    summary = build_sec_summary(REAL_6K_TITLE, "2026-05-28T10:25:01.000Z")
+    assert "[SEC Filing] 6-K" in summary
+    assert "Accession Number: 0001104659-26-067186" in summary
+    assert "Filing Date: 2026-05-28" in summary
+    assert "File Size: 212 KB" in summary
+    assert "sec.gov" in summary
+
+
+def test_build_sec_summary_no_date():
+    from xueqiu_analyzer.sec_fetcher import build_sec_summary
+    summary = build_sec_summary(REAL_6K_TITLE, "")
+    assert "Accession Number" in summary
+    assert "Filing Date" not in summary
+
+
+def test_build_sec_summary_non_sec_title():
+    from xueqiu_analyzer.sec_fetcher import build_sec_summary
+    summary = build_sec_summary("MANYCORE TECH 月报表 ...", "")
+    assert "Accession Number" not in summary
+    assert "sec.gov" not in summary
+    assert "[SEC Filing]" in summary  # still wrapped
+
+
 # ── _clean_sec_text ──────────────────────────────────────────
 
 def test_clean_sec_text_strips_html():
