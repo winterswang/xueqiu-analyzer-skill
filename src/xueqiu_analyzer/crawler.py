@@ -367,13 +367,54 @@ class XueqiuCrawler:
                     self._save_cookies(context)
                     return result
 
-                # ========== 爬取公告正文（PDF） ==========
+                # ========== 爬取公告正文（PDF + SEC） ==========
                 if max_notices > 0:
+                    from .sec_fetcher import (
+                        is_high_value_filing, extract_accession, extract_form_type,
+                        fetch_filing_text,
+                    )
+
                     self.logger.info(f"爬取 {min(max_notices, len(result.notices))} 条公告正文...")
                     success_count = 0
                     fail_count = 0
                     for i, nt in enumerate(result.notices[:max_notices]):
-                        if nt.link and (nt.link.endswith('.pdf') or 'stockmc.xueqiu.com' in nt.link):
+                        # ── 路径 1: 美股 SEC filing ──
+                        if is_high_value_filing(nt.title):
+                            accession = extract_accession(nt.title)
+                            form_type = extract_form_type(nt.title)
+                            if accession and form_type:
+                                self.logger.info(
+                                    f"  📡 [{i+1}/{min(max_notices, len(result.notices))}] "
+                                    f"SEC {form_type} {accession}: {nt.title[:50]}"
+                                )
+                                try:
+                                    text = fetch_filing_text(
+                                        ticker=result.symbol,
+                                        form_type=form_type,
+                                        accession_number=accession,
+                                        filing_date=nt.time,
+                                    )
+                                    if text and len(text) > 50:
+                                        nt.content = text
+                                        success_count += 1
+                                        self.logger.info(
+                                            f"  ✅ [{i+1}] SEC {form_type} {len(text)}字"
+                                        )
+                                    else:
+                                        fail_count += 1
+                                        self.logger.warning(
+                                            f"  ❌ [{i+1}] SEC 提取失败: {nt.title[:40]}"
+                                        )
+                                except Exception as e:
+                                    fail_count += 1
+                                    self.logger.warning(
+                                        f"  ❌ [{i+1}] SEC 异常: {e}"
+                                    )
+                            else:
+                                self.logger.debug(f"  ⊘ SEC 解析失败: {nt.title[:60]}")
+
+                        # ── 路径 2: PDF 公告（港股/A股）───
+                        elif nt.link and (nt.link.endswith('.pdf') or 'stockmc.xueqiu.com' in nt.link):
                             text = self._crawl_notice_pdf_text(nt.link)
                             if text and len(text) > 50:
                                 nt.content = text
@@ -382,10 +423,13 @@ class XueqiuCrawler:
                             else:
                                 fail_count += 1
                                 self.logger.warning(f"  ❌ [{i+1}/{min(max_notices, len(result.notices))}] 提取失败: {nt.title[:40]}")
+
+                        # ── 路径 3: 跳过（低价值 SEC filing / 无链接）───
                         else:
-                            self.logger.debug(f"  ⊘ 非PDF跳过: {nt.link}")
+                            self.logger.debug(f"  ⊘ 跳过: {nt.title[:60]}")
+
                         if i < len(result.notices) - 1:
-                            self.human_delay(1.0, 2.0)
+                            self.human_delay(0.5, 1.5)
                     self.logger.info(f"公告正文爬取完成: {success_count}成功/{fail_count}失败")
 
                 # ========== 爬取文章 ==========
