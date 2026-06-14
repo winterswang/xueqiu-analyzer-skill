@@ -36,3 +36,47 @@ class TestCleanPua:
         """Re-cleaning should be a no-op."""
         text = "clean text already"
         assert clean_pua(clean_pua(text)) == text
+
+
+class TestApiDiagnostics:
+    """Verify non-JSON API diagnostics are actionable and secret-safe."""
+
+    class DummyResponse:
+        def __init__(self, text='', status_code=200, content_type='text/html'):
+            self.text = text
+            self.status_code = status_code
+            self.headers = {'content-type': content_type}
+            self.content = text.encode('utf-8')
+
+        def json(self):
+            raise ValueError('Expecting value: line 1 column 1 (char 0)')
+
+    def test_non_json_login_html_diagnostic_redacts_token(self, caplog):
+        from xueqiu_analyzer.crawler import _json_or_log_diagnostic
+
+        resp = self.DummyResponse('<html>用户登录 token=SECRET123</html>')
+        url = 'https://xueqiu.com/query?xq_a_token=SECRET456&symbol=PDD'
+
+        with caplog.at_level('WARNING'):
+            data = _json_or_log_diagnostic(resp, __import__('logging').getLogger('test'), '讨论', url)
+
+        assert data is None
+        assert 'status=200' in caplog.text
+        assert 'content_type=' in caplog.text
+        assert 'reason=login_html' in caplog.text
+        assert 'body_head=' in caplog.text
+        assert 'SECRET123' not in caplog.text
+        assert 'SECRET456' not in caplog.text
+        assert 'xq_a_token=<redacted>' in caplog.text
+
+    def test_non_json_empty_body_classification(self):
+        from xueqiu_analyzer.crawler import _classify_non_json_response
+
+        resp = self.DummyResponse('', content_type='application/json')
+        assert _classify_non_json_response(resp, '') == 'empty_body'
+
+    def test_non_json_captcha_classification(self):
+        from xueqiu_analyzer.crawler import _classify_non_json_response
+
+        resp = self.DummyResponse('<html>安全验证 验证码</html>', content_type='text/html')
+        assert _classify_non_json_response(resp, resp.text) == 'captcha_html'

@@ -116,6 +116,64 @@ def clean_pua(text: str) -> str:
     return _PUA_CLEAN_RE.sub('', text)
 
 
+_SENSITIVE_QUERY_RE = re.compile(r'(?i)(token|cookie|access_key|secret|password)=([^&\s]+)')
+
+
+def _redact_url(url: str) -> str:
+    """Redact sensitive query values before logging URLs."""
+    return _SENSITIVE_QUERY_RE.sub(r'\1=<redacted>', url)
+
+
+def _classify_non_json_response(resp: requests.Response, body_head: str) -> str:
+    """Classify common Xueqiu non-JSON failure pages without logging secrets."""
+    text = (body_head or '').lower()
+    content_type = (resp.headers.get('content-type') or '').lower()
+    if not body_head and not resp.content:
+        return 'empty_body'
+    if 'text/html' in content_type or '<html' in text or '<!doctype html' in text:
+        if any(k in text for k in ('登录', 'login', 'sign in', '用户登录')):
+            return 'login_html'
+        if any(k in text for k in ('captcha', '验证码', '人机', '安全验证')):
+            return 'captcha_html'
+        return 'html_page'
+    if any(k in text for k in ('captcha', '验证码', '人机', '安全验证')):
+        return 'captcha_or_verification'
+    if any(k in text for k in ('forbidden', 'access denied', 'waf', '风险', '安全')):
+        return 'waf_or_access_denied'
+    return 'non_json'
+
+
+def _response_body_head(resp: requests.Response, limit: int = 160) -> str:
+    """Return a sanitized response prefix for diagnostics (no cookies/tokens)."""
+    text = (resp.text or '')[:limit]
+    text = text.replace('\n', ' ').replace('\r', ' ')
+    text = _SENSITIVE_QUERY_RE.sub(r'\1=<redacted>', text)
+    return text
+
+
+def _json_or_log_diagnostic(resp: requests.Response, logger: logging.Logger,
+                            context: str, url: str) -> Optional[dict]:
+    """Parse JSON; on non-JSON log actionable diagnostics and return None."""
+    content_type = resp.headers.get('content-type', '')
+    try:
+        return resp.json()
+    except ValueError as exc:
+        body_head = _response_body_head(resp)
+        reason = _classify_non_json_response(resp, body_head)
+        logger.warning(
+            "%s API returned non-JSON: status=%s content_type=%r bytes=%s reason=%s url=%s body_head=%r json_error=%s",
+            context,
+            resp.status_code,
+            content_type,
+            len(resp.content or b''),
+            reason,
+            _redact_url(url),
+            body_head,
+            exc,
+        )
+        return None
+
+
 class XueqiuCrawler:
     """雪球数据爬虫 — 只管爬，输出标准 CrawlResult"""
 
@@ -759,8 +817,16 @@ class XueqiuCrawler:
                        f'&hl=0&source=all&sort=time&page={page_num}&q=&type=11')
                 resp = requests.get(url, headers=headers, timeout=15)
                 if resp.status_code != 200:
+                    self.logger.warning(
+                        "讨论 API HTTP error: status=%s content_type=%r bytes=%s url=%s body_head=%r",
+                        resp.status_code, resp.headers.get('content-type', ''),
+                        len(resp.content or b''), _redact_url(url), _response_body_head(resp),
+                    )
                     break
-                items = resp.json().get('list', [])
+                data = _json_or_log_diagnostic(resp, self.logger, "讨论", url)
+                if data is None:
+                    break
+                items = data.get('list', [])
                 if not items:
                     break
 
@@ -867,8 +933,15 @@ class XueqiuCrawler:
                        f'?symbol_id={symbol}&count=10&source=%E5%85%AC%E5%91%8A&page={page_num}')
                 resp = requests.get(url, headers=headers, timeout=15)
                 if resp.status_code != 200:
+                    self.logger.warning(
+                        "公告 API HTTP error: status=%s content_type=%r bytes=%s url=%s body_head=%r",
+                        resp.status_code, resp.headers.get('content-type', ''),
+                        len(resp.content or b''), _redact_url(url), _response_body_head(resp),
+                    )
                     break
-                data = resp.json()
+                data = _json_or_log_diagnostic(resp, self.logger, "公告", url)
+                if data is None:
+                    break
                 items = data.get('list', [])
                 if not items:
                     break
