@@ -139,7 +139,9 @@ def _parse_discussion(item, links: List[str] = None) -> Optional[Discussion]:
             _m, body, author, time_str, source = _split_meta_line(item)
             content = _clean_body(body)[:500]
 
-        is_column = source == "雪球"
+        # 只有显式标注"来自雪球专栏"才是专栏文章
+        # 普通讨论空来源会 fallback 到"雪球", 不算专栏
+        is_column = (source or "").strip().lower().find("专栏") >= 0
 
         link = ""
         for href in links:
@@ -188,6 +190,15 @@ def _parse_news(item, links: List[str] = None) -> Optional[News]:
         if not title:
             return None
 
+        # 若 source 为空，尝试从正文开头提取"来源：XXX"（雪球资讯正文一般这么写）
+        if not source and content:
+            first_line = content.split('\n')[0].strip()
+            m = re.search(r'^来源[：:][ \t]*([^ \t]+)', first_line)
+            if m:
+                source = m.group(1)
+                # 删掉来源行
+                content = '\n'.join(content.split('\n')[1:]).strip()
+
         link = ""
         for href in links:
             if href and not href.startswith("javascript"):
@@ -219,6 +230,7 @@ def _parse_notice(item, links: List[str] = None) -> Optional[Notice]:
         if not body_lines:
             return None
         title = _clean_pua(body_lines[0].strip())[:100]
+        title = title.rstrip().removesuffix("网页链接").rstrip()
         if not title or title in ("转发", "讨论", "赞", "收藏"):
             return None
         link = ""
