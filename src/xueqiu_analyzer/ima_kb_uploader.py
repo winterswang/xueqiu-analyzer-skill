@@ -145,7 +145,7 @@ def list_knowledge_bases() -> list[dict]:
         if data.get("is_end"):
             break
         cursor = data.get("next_cursor", "")
-    return all_kbs
+    return [{"id": kb.get("id"), "name": kb.get("name")} for kb in all_kbs]
 
 
 def _detect_media_type(file_path: str) -> tuple[int, str]:
@@ -159,8 +159,11 @@ def _detect_media_type(file_path: str) -> tuple[int, str]:
         return 5, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     elif ext in ("doc", "docx"):
         return 3, "application/msword"
-    elif ext == "txt":
+    elif ext in ("txt", "md"):
         return 13, "text/plain"
+    elif ext in ("htm", "html"):
+        # HTML网页类型，IMA支持直接解析HTML
+        return 13, "text/html"
     else:
         return 5, "application/octet-stream"  # fallback
 
