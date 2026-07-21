@@ -53,6 +53,25 @@ class TestDetectMediaType:
         assert mt == 5
         assert ct == "text/csv"
 
+    def test_html_uses_text_plain(self):
+        # 2026-07-21: HTML must use content_type=text/plain (NOT text/html)
+        # so IMA backend processes the file successfully. text/html returns
+        # code=220030 "该文件获取失败". See memory #1 (2026-07-16).
+        mt, ct = _detect_media_type("report.html")
+        assert mt == 13  # TXT
+        assert ct == "text/plain"
+
+    def test_htm_uses_text_plain(self):
+        mt, ct = _detect_media_type("page.htm")
+        assert mt == 13
+        assert ct == "text/plain"
+
+    def test_html_uppercase(self):
+        # .HTML extension must also resolve to text/plain
+        mt, ct = _detect_media_type("INDEX.HTML")
+        assert mt == 13
+        assert ct == "text/plain"
+
 
 class TestUploadFileEdgeCases:
 

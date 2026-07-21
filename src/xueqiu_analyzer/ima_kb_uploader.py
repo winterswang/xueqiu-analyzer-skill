@@ -162,8 +162,11 @@ def _detect_media_type(file_path: str) -> tuple[int, str]:
     elif ext in ("txt", "md"):
         return 13, "text/plain"
     elif ext in ("htm", "html"):
-        # HTML网页类型，IMA支持直接解析HTML
-        return 13, "text/html"
+        # HTML web pages: IMA 内部会走 text 处理路径，需要 content_type=text/plain
+        # 才能被成功索引（code=220030 “该文件获取失败” 原因）。
+        # file_ext 保留 html 让 IMA 知道原始格式；media_type=13 (TXT)。
+        # 2026-07-21 验证：REF/JMKE S-1 招股书 HTML 11MB/53MB 上传成功。
+        return 13, "text/plain"
     else:
         return 5, "application/octet-stream"  # fallback
 
