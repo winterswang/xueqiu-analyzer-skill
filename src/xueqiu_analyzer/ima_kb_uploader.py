@@ -162,8 +162,11 @@ def _detect_media_type(file_path: str) -> tuple[int, str]:
     elif ext in ("txt", "md"):
         return 13, "text/plain"
     elif ext in ("htm", "html"):
-        # HTML网页类型，IMA支持直接解析HTML
-        return 13, "text/html"
+        # HTML web pages: IMA 后端能正确解析 HTML 结构的组合是
+        #   media_type=20 (HTML) + content_type='text/html' + file_ext=html
+        # type=13 + text/plain 被 IMA 接受 (create_media 200) 但 search 索引查不到
+        # (TXT 路径不解析 HTML 结构)。验证：2026-07-21 招股书 KB REF/JMKE。
+        return 20, "text/html"
     else:
         return 5, "application/octet-stream"  # fallback
 
