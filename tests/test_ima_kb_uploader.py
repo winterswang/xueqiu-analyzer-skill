@@ -53,6 +53,30 @@ class TestDetectMediaType:
         assert mt == 5
         assert ct == "text/csv"
 
+    def test_html_uses_type20_text_html(self):
+        # 2026-07-21: HTML must use media_type=20 + content_type='text/html'
+        # so IMA backend parses HTML structure and indexes for search.
+        # Earlier combinations (type=13 + text/plain, or type=13 + text/html)
+        # succeed at create_media API but the record is never indexed —
+        # search_knowledge returns 0 hits.
+        # Source of truth: /root/code/openclaw-workspace/skills/ima/
+        #   knowledge-base/scripts/preflight-check.cjs
+        # (which matches what IMA UI does).
+        mt, ct = _detect_media_type("report.html")
+        assert mt == 20
+        assert ct == "text/html"
+
+    def test_htm_uses_type20_text_html(self):
+        mt, ct = _detect_media_type("page.htm")
+        assert mt == 20
+        assert ct == "text/html"
+
+    def test_html_uppercase(self):
+        # .HTML extension must also resolve to type=20 / text/html
+        mt, ct = _detect_media_type("INDEX.HTML")
+        assert mt == 20
+        assert ct == "text/html"
+
 
 class TestUploadFileEdgeCases:
 
