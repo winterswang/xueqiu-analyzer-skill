@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
-> 最后更新：2026-06-02  
-> 版本：V4.0  
-> 最近一次 `LAST_ANALYZED`：`f1ad6fa`
-> 分析范围：全部历史 commit（91 个）
+> 最后更新：2026-08-04  
+> 版本：V4.1  
+> 最近一次 `LAST_ANALYZED`：`3c273e0`
+> 分析范围：全部历史 commit（132 个）
 
-<!-- @@LAST_ANALYZED: f1ad6fad7aefb8f0d03bfdf96e80ddedd7b6d5a3 @@-->
+<!-- @@LAST_ANALYZED: 3c273e0 @@-->
 
 ---
 
@@ -69,7 +69,7 @@
 |------|------|------|------|
 | 编排器 | `orchestrator.py` | 349 | 迭代爬取 + 硬指标检测 + LLM 评估 + 分析全流程编排 |
 | 数据质量 | `quality.py` | 279 | Layer 1 硬指标检测器：内容完整率/财务填充率/健康分 |
-| 爬虫引擎 | `crawler.py` | 727 | Playwright 浏览器自动化：登录、Tab 切换、滚动加载、去重合并 |
+| 爬虫引擎 | `crawler.py` | 1688 | Playwright + 雪球 API 混合爬虫：讨论/资讯/公告/文章 + 互动量提取 |
 | 评估器 | `evaluator.py` | 281 | Layer 2 LLM 信息充分性评估（8 主题打分） |
 | 分析器 | `analyzer.py` | 202 | 深度投资分析报告生成（LLM Prompt） |
 | LLM 客户端 | `llm_client.py` | 170 | 统一 LLM 调用封装（chat/evaluate/analyze/simple_chat） |
@@ -255,6 +255,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-012 | `debug_news_notices.py` 语法错误 | shebang/import/路径字符串 | ✅ 已修复 | `64d0bde` | 代码审查 P0 修复 |
 | B-013 | max_tokens 0 被当作 falsy 覆盖 | `max_tokens or config` 逻辑 | ✅ 已修复 | `1f8ca71` | 改为 `max_tokens is not None` |
 | B-014 | openclaw.json 异常静默吞 | `except Exception: pass` 无日志 | ✅ 已修复 | `1f8ca71` | 改为 `logger.debug(...)` |
+| B-015 | 互动量全为零（like/comment/forward） | 4 处 Discussion 构造路径均未填充互动字段，dataclass 默认 0 | ✅ 已修复 | `3c273e0` | 为 API/opencli/HTML 三条路径全部补抓互动量，新增 5 个测试 |
 
 ---
 
@@ -323,6 +324,22 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 ---
 
 ## 🔄 版本记录
+
+### v4.1.1 (2026-08-04) — 互动量数据修复
+
+**Commit**：`3c273e0`
+
+**修复**：
+- 🐛 `crawler.py` 4 处 Discussion 构造路径均未填充互动字段（like_count/comment_count/forward_count），导致下游 CSV 导出和内容质量筛选中的互动数据全为零
+  - **Path 1&2 (opencli)**：API 返回字段 `likes`/`replies`/`forwards` 未映射到 Discussion
+  - **Path 3 (Xueqiu API)**：API 返回字段 `like_count`/`reply_count`/`retweet_count` 未映射
+  - **Path 4 (HTML 解析)**：`_parse_single_discussion()` 未从页面 footer 提取「转发 N 回复 N 赞 N」互动数据
+- 🔧 `_parse_single_discussion()` 新增正则匹配从 HTML footer 提取互动量：`(?:转发|转发数)\s*(\d+)\s*(?:回复|评论)\s*(\d+)\s*(?:赞|点赞)\s*(\d+)`
+- 🧪 `test_crawler.py` 新增 `TestEngagementMetrics` 类（5 个测试），覆盖全部 4 个构造路径 + 默认零值
+
+**影响**：
+- `crawler.py`：1655 → 1688 行（+33），`test_crawler.py`：82 → 196 行（+114）
+- 下游 CSV 导出和 ContentGrader 评分现在可获得真实互动量数据
 
 ### v3.0.1 (2026-05-25) — 代码审查清理
 
