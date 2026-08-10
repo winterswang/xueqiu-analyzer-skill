@@ -312,6 +312,9 @@ class XueqiuCrawler:
                             time=item.get('created_at', ''),
                             link=item.get('url', ''),
                             is_column=False,
+                            like_count=int(item.get('likes', 0) or 0),
+                            comment_count=int(item.get('replies', 0) or 0),
+                            forward_count=int(item.get('forwards', 0) or 0),
                         ))
                 else:
                     api_discs = self._crawl_discussions_via_api(
@@ -778,6 +781,9 @@ class XueqiuCrawler:
                             time=item.get('created_at', ''),
                             link=item.get('url', ''),
                             is_column=False,
+                            like_count=int(item.get('likes', 0) or 0),
+                            comment_count=int(item.get('replies', 0) or 0),
+                            forward_count=int(item.get('forwards', 0) or 0),
                         ))
                         if max_items > 0 and total_items_fn and total_items_fn() >= max_items:
                             break
@@ -857,6 +863,9 @@ class XueqiuCrawler:
                             time=ts,
                             link=link,
                             is_column=is_col,
+                            like_count=int(item.get('like_count', 0) or 0),
+                            comment_count=int(item.get('reply_count', 0) or 0),
+                            forward_count=int(item.get('retweet_count', 0) or 0),
                         ))
 
                 self.logger.info(f"  API 页 {page_num}: {len(items)} 条 "
@@ -1047,6 +1056,25 @@ class XueqiuCrawler:
             author = author_match.group(1).strip()[:30] if author_match else ''
             time_match = re.search(r'(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天|\d{2}:\d{2}|\d{4}-\d{2}-\d{2})', text)
             time_str = time_match.group(1) if time_match else ''
+
+            # Extract engagement metrics before stripping them from content.
+            # Xueqiu's timeline item footer typically reads like:
+            #   "转发 12  回复 34  赞 56"  or  "12  34  56" (icon-only layout)
+            # Match the last occurrence to avoid hitting numbers inside the body.
+            like_count = 0
+            comment_count = 0
+            forward_count = 0
+            eng_match = re.search(
+                r'(?:转发|转发数)\s*(\d+)\s*(?:回复|评论)\s*(\d+)\s*(?:赞|点赞)\s*(\d+)',
+                text,
+            )
+            if eng_match:
+                forward_count, comment_count, like_count = (
+                    int(eng_match.group(1)),
+                    int(eng_match.group(2)),
+                    int(eng_match.group(3)),
+                )
+
             content = re.sub(r'^[^\d]+?(\d+秒前|\d+分钟前|\d+小时前|\d+天前|昨天|今天)[^\n]*', '', text)
             content = re.sub(r'展开.*$', '', content, flags=re.MULTILINE)
             content = re.sub(r'转发.*$', '', content, flags=re.MULTILINE)
@@ -1066,8 +1094,13 @@ class XueqiuCrawler:
                     break
 
             if content and len(content) > 10:
-                return Discussion(author=author, content=content,
-                                  time=time_str, link=link, is_column=is_column)
+                return Discussion(
+                    author=author, content=content,
+                    time=time_str, link=link, is_column=is_column,
+                    like_count=like_count,
+                    comment_count=comment_count,
+                    forward_count=forward_count,
+                )
         except Exception:
             pass
         return None
