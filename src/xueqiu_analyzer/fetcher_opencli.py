@@ -119,6 +119,52 @@ def fetch_discussions(code: str, limit: int = 100) -> list[dict]:
         return []
 
 
+def fetch_news(code: str, limit: int = 30) -> list[dict]:
+    """Fetch stock news feed via opencli xueqiu news (statuses/stock_timeline.json).
+
+    2026-09-18: the 资讯 tab's real API (captured live, verified without the
+    md5__ tracking param). Until now news was only reachable via the
+    Playwright DOM path, which the opencli fast path skips — the fast path
+    has been silently news-less since it shipped.
+
+    Returns list of dicts: {id, title, text, source, link, created_at}
+    (empty list on failure, same contract as the other fetch_* here).
+    """
+    symbol = _to_xueqiu_symbol(code)
+    try:
+        result = _run("xueqiu", "news", symbol, "--limit", str(limit), "-f", "json", timeout=60)
+        if result.returncode != 0:
+            logger.debug(f"opencli news {symbol}: {result.stderr[:200]}")
+            return []
+        data = json.loads(_clean_json(result.stdout))
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.debug(f"opencli news {symbol} failed: {e}")
+        return []
+
+
+def fetch_replies(post_url: str, limit: int = 20) -> list[dict]:
+    """Fetch the reply thread under ONE post via opencli xueqiu replies
+    (statuses/comments.json — verified 2026-09-18).
+
+    post_url: the post URL as stored in crawl_snapshots posts_data
+    (https://xueqiu.com/<uid>/<status_id>); the adapter extracts the id.
+
+    Returns list of dicts: {id, author, text, likes, created_at, reply_to}
+    (empty list on failure / no replies).
+    """
+    try:
+        result = _run("xueqiu", "replies", post_url, "--limit", str(limit), "-f", "json", timeout=90)
+        if result.returncode != 0:
+            logger.debug(f"opencli replies {post_url}: {result.stderr[:200]}")
+            return []
+        data = json.loads(_clean_json(result.stdout))
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.debug(f"opencli replies {post_url} failed: {e}")
+        return []
+
+
 def fetch_notices(code: str, limit: int = 50) -> list[dict]:
     """Fetch stock notices via opencli xueqiu stock-notices.
 
