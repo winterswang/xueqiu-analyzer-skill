@@ -19,6 +19,8 @@ import shutil
 import subprocess
 from typing import Any
 
+from .waf import classify_failure
+
 logger = logging.getLogger(__name__)
 
 # ── 源级失败记录 ──────────────────────────────────────────
@@ -29,19 +31,6 @@ FAIL_LOG = os.environ.get('XQ_SOURCE_FAIL_LOG') or os.path.join(os.getcwd(), 'lo
 
 # 跨天时旧日志归档到 <FAIL_LOG 同级的 logs>/source_failures/YYYY-MM-DD.jsonl，保留天数见下。
 FAIL_ARCHIVE_KEEP_DAYS = 30
-
-
-def _classify_reason(err):
-    e = err or ''
-    if any(k in e for k in ('滑动验证', '访问验证', '安全限制', '请按住滑块', '风控', 'SECURITY_BLOCK')):
-        return '风控验证页'
-    if 'AUTH_REQUIRED' in e or '未登录' in e or '登录态' in e:
-        return '登录态失效'
-    if 'EMPTY_RESULT' in e or 'no data' in e:
-        return '无数据'
-    if 'HTTP 4' in e or 'HTTP 5' in e or 'timeout' in e.lower():
-        return '接口异常'
-    return '其他'
 
 
 def _rotate_fail_log(path=None, keep_days=None):
@@ -85,13 +74,13 @@ def _rotate_fail_log(path=None, keep_days=None):
     except Exception:
         return None
 
-
 def record_source_failure(source, target, rc, err):
     # 把一次源抓取失败落盘；写失败也不影响主流程。
+    # 归类用 waf.classify_failure（唯一实现）—— 风控关键词表在 xueqiu_analyzer.waf。
     from datetime import datetime
     first_line = (err or '').strip().splitlines()[0][:200] if (err or '').strip() else ''
     rec = {'ts': datetime.now().isoformat(timespec='seconds'), 'source': source,
-           'target': str(target), 'rc': rc, 'reason': _classify_reason(err), 'error': first_line}
+           'target': str(target), 'rc': rc, 'reason': classify_failure(err), 'error': first_line}
     try:
         d = os.path.dirname(FAIL_LOG)
         if d:
