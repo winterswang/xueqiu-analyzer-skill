@@ -38,3 +38,6 @@ logs/
 DAILY_LOG.md
 debug_test.py
 .bak*
+
+# DeepSeek TUI 自动生成的工具状态（agent 运行记录 / 目录树），不应入库
+.deepseek/
