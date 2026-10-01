@@ -56,6 +56,13 @@ CONTENT_PATTERNS = (
     "安全限制",
     "访问频繁",
     "website-login",
+    # 裸「405」**不做**正文子串匹配 —— 「营收 405 亿元」这类正常文章会被误判成
+    # 错误页并反复重试（旧 opencli_extractor 的写法）。只认下面这些具体形态，
+    # 它们既能抓住「标题正常、正文写着 405 Forbidden」的错误页，又不会撞上数字。
+    # （前 3 条来自 xueqiu-crawler PR #54 对同一个 bug 的收紧，合并时并入本表。）
+    "405 forbidden",
+    "http 405",
+    "405 not allowed",
 )
 
 # 整页 HTML 里出现即判定（WAF 注入的标记）。
