@@ -70,6 +70,18 @@ def test_405_in_body_is_not_an_error_page():
     assert waf.is_error_page(title="贵州茅台三季报", content=body) is False
 
 
+def test_specific_405_forms_detected_but_bare_digits_are_not():
+    """回归：裸「405」不能做正文子串匹配 —— 「营收 405 亿元」这类正常文章会误判。
+
+    但具体的 405 错误页形态（来自 xueqiu-crawler PR #54 对同一 bug 的收紧）
+    必须仍然认得出，否则「标题正常、正文写着 405 Forbidden」的页面会漏掉。
+    """
+    assert waf.contains_waf_text("405 Forbidden") is True
+    assert waf.contains_waf_text("HTTP 405") is True
+    assert waf.contains_waf_text("405 Not Allowed") is True
+    assert waf.contains_waf_text("贵州茅台 405 亿元营收，同比增长 11%") is False
+
+
 def test_only_head_is_scanned():
     body = "正" * (waf.CONTENT_HEAD_CHARS + 50) + "滑动验证"
     assert waf.is_error_page(title="正常标题", content=body) is False

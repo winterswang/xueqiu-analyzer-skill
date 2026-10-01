@@ -2,10 +2,10 @@
 
 > 最后更新：2026-10-01  
 > 版本：V4.2  
-> 最近一次 `LAST_ANALYZED`：`da91358`
-> 分析范围：全部历史 commit（133 个）
+> 最近一次 `LAST_ANALYZED`：`bdf4e8b`
+> 分析范围：全部历史 commit（134 个）
 
-<!-- @@LAST_ANALYZED: da91358 @@-->
+<!-- @@LAST_ANALYZED: bdf4e8b @@-->
 
 ---
 
@@ -78,7 +78,7 @@
 | 配置加载 | `config.py` | 93 | YAML + 环境变量 + openclaw.json fallback 链 |
 | 数据模型 | `models.py` | 281 | CrawlResult/EvaluationResult/FinancialData 等 dataclass |
 | CLI 入口 | `cli.py` | 251 | Click 命令行接口（analyze/crawl/evaluate/reanalyze/cookies） |
-| 风控判定 | `waf.py` | 178 | 风控页判定唯一实现：is_error_page / is_waf_blocked / classify_failure / needs_login |
+| 风控判定 | `waf.py` | 183 | 风控页判定唯一实现：is_error_page / is_waf_blocked / classify_failure / needs_login / has_waf_marker |
 
 ### V2 遗留代码
 
@@ -310,6 +310,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TD-012 | 静默吞异常 | `_load_openclaw_provider` 无日志 | P2 | ✅ 已解决 | 1f8ca71 |
 | TD-013 | 跨仓库引用不可见 | 归档判定仅 grep 单仓库，未覆盖外部 consumer（xueqiu-monitor），导致误归档 | P2 | 🟡 部分解决 | 归档决策流程需纳入跨仓库引用检测 |
 | TD-014 | 语义遗留 | `_check_login_status` 遇风控页返回 False，调用方走登录流程而非退避等待（作者注释标注的既有行为） | P2 | 🔴 未解决 | 稳定性 |
+| TD-015 | 模式表漂移 | `crawler_nodriver._detect_waf` 仍用本地 `_WAF_CONTENT_PATTERNS=("aliyun_waf","_waf_","renderData")`，与 `waf.PAGE_MARKERS=("aliyun_waf",)` 已漂移；`has_waf_marker` 已抽出但尚未接线 | P1 | 🔴 未解决 | 稳定性 |
 
 ---
 
@@ -324,6 +325,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TODO-005 | 增加 orchestrator 流程测试 | P1 | 测试覆盖缺口 |
 | TODO-006 | 增加 financial_fetcher fallback 测试 | P1 | 测试覆盖缺口 |
 | TODO-007 | 检查 `_refresh_cookies()` 中 `subprocess.check_output` 路径硬编码 | P2 | 稳定性 |
+| TODO-008 | `crawler_nodriver._detect_waf` 改用 `waf.has_waf_marker`，删除本地漂移模式表 `_WAF_CONTENT_PATTERNS` | P1 | TD-015 |
 
 ---
 
@@ -375,6 +377,20 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 
 **验证**：
 - ✅ 全量 pytest 216 passed，无回归
+
+### v4.2.1 (2026-10-01) — 抽出 has_waf_marker 页面标记检查
+
+**Commit**：`bdf4e8b`
+
+**变更**：
+- 🔧 `waf.py` 抽出 `has_waf_marker(html)`：整页 HTML 是否含 WAF 注入标记（`aliyun_waf`），大小写不敏感；`is_waf_blocked` 改为复用它，外部行为不变
+- 🧪 新增回归测试 `test_has_waf_marker_is_page_wide_and_case_insensitive`：验证「标记查整页 HTML 而非仅头部」+ 大小写不敏感（5000 字之后的大写 `ALIYUN_WAF` 仍能命中，而头部扫描 `contains_waf_text` 看不到）
+
+**动机**：`crawler_nodriver._detect_waf` 需要「整页 HTML 是否含 WAF 标记」这一个判断，但走 `is_error_page` 不合适——那条「空标题算错误页」规则是为过滤坏文章设计的，拿来触发浏览器重启太激进（一次没取到标题就重启不划算）。抽成独立函数后 crawler 侧可直接调它。
+
+**验证**：✅ pytest 249 passed
+
+**遗留**：本提交只完成「抽出」这一步，`crawler_nodriver._detect_waf` 尚未接线（见 TD-015 / TODO-008）。
 
 ### v4.2.0 (2026-10-01) — 风控页判定统一重构
 
