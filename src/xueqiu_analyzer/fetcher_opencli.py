@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # 否则落到 <cwd>/logs/source_failures.jsonl（monitor 的 cron 以项目根为 cwd）。
 FAIL_LOG = os.environ.get('XQ_SOURCE_FAIL_LOG') or os.path.join(os.getcwd(), 'logs', 'source_failures.jsonl')
 
+# 跨天时旧日志归档到 <FAIL_LOG 同级的 logs>/source_failures/YYYY-MM-DD.jsonl，保留天数见下。
+FAIL_ARCHIVE_KEEP_DAYS = 30
+
 
 def _classify_reason(err):
     e = err or ''
@@ -41,6 +44,48 @@ def _classify_reason(err):
     return '其他'
 
 
+def _rotate_fail_log(path=None, keep_days=None):
+    """跨天时归档旧失败日志并清理过期归档，返回归档路径或 None。
+
+    只在『文件最后写入日 < 今天』时轮转 —— 同一天内多次调用不动文件，
+    所以读取方（monitor 的 health_check / cli）仍只需读固定路径，
+    就能拿到当天的全部记录，不会因为轮转丢掉今天的早期失败。
+    """
+    from datetime import date, timedelta
+    p = path or FAIL_LOG
+    try:
+        if not os.path.exists(p) or os.path.getsize(p) == 0:
+            return None
+        day = date.fromtimestamp(os.path.getmtime(p))
+        if day >= date.today():
+            return None
+
+        archive_dir = os.path.join(os.path.dirname(p), 'source_failures')
+        os.makedirs(archive_dir, exist_ok=True)
+        dest = os.path.join(archive_dir, '%s.jsonl' % day.isoformat())
+        if os.path.exists(dest):
+            # 同一天二次归档（理论上不该发生）：追加而非覆盖
+            with io.open(p, 'r', encoding='utf-8') as src, io.open(dest, 'a', encoding='utf-8') as dst:
+                dst.write(src.read())
+            os.remove(p)
+        else:
+            os.replace(p, dest)
+
+        keep = FAIL_ARCHIVE_KEEP_DAYS if keep_days is None else keep_days
+        cutoff = date.today() - timedelta(days=keep)
+        for name in os.listdir(archive_dir):
+            if not name.endswith('.jsonl'):
+                continue
+            try:
+                if date.fromisoformat(name[:-len('.jsonl')]) < cutoff:
+                    os.remove(os.path.join(archive_dir, name))
+            except ValueError:
+                continue
+        return dest
+    except Exception:
+        return None
+
+
 def record_source_failure(source, target, rc, err):
     # 把一次源抓取失败落盘；写失败也不影响主流程。
     from datetime import datetime
@@ -51,6 +96,7 @@ def record_source_failure(source, target, rc, err):
         d = os.path.dirname(FAIL_LOG)
         if d:
             os.makedirs(d, exist_ok=True)
+        _rotate_fail_log(FAIL_LOG)
         with io.open(FAIL_LOG, 'a', encoding='utf-8') as f:
             f.write(json.dumps(rec, ensure_ascii=False) + chr(10))
     except Exception:
