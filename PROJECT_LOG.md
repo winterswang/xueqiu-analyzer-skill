@@ -2,10 +2,10 @@
 
 > 最后更新：2026-10-01  
 > 版本：V4.2  
-> 最近一次 `LAST_ANALYZED`：`bdf4e8b`
-> 分析范围：全部历史 commit（134 个）
+> 最近一次 `LAST_ANALYZED`：`a9b42ab`
+> 分析范围：全部历史 commit（135 个）
 
-<!-- @@LAST_ANALYZED: bdf4e8b @@-->
+<!-- @@LAST_ANALYZED: a9b42ab @@-->
 
 ---
 
@@ -78,7 +78,7 @@
 | 配置加载 | `config.py` | 93 | YAML + 环境变量 + openclaw.json fallback 链 |
 | 数据模型 | `models.py` | 281 | CrawlResult/EvaluationResult/FinancialData 等 dataclass |
 | CLI 入口 | `cli.py` | 251 | Click 命令行接口（analyze/crawl/evaluate/reanalyze/cookies） |
-| 风控判定 | `waf.py` | 183 | 风控页判定唯一实现：is_error_page / is_waf_blocked / classify_failure / needs_login / has_waf_marker |
+| 风控判定 | `waf.py` | 190 | 风控页判定唯一实现：is_error_page / is_waf_blocked / classify_failure / needs_login / has_waf_marker |
 
 ### V2 遗留代码
 
@@ -120,7 +120,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | PyYAML | 配置文件 |
 | Click | CLI 框架 |
 | urllib | HTTP 请求 |
-| pytest | 单元测试（248 个） |
+| pytest | 单元测试（253 个） |
 
 ---
 
@@ -290,6 +290,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-016 | source_failures.jsonl 无限增长 | record_source_failure 只追加不清理，无轮转/归档机制 | ✅ 已修复 | `38a482b` | 新增 `_rotate_fail_log()` 跨天归档到 `logs/source_failures/YYYY-MM-DD.jsonl`，保留 30 天；同天内不动文件 |
 | B-017 | crawler_nodriver.py 误归档 → monitor 静默回退 playwright | 归档判定仅 grep 本仓库，未发现 xueqiu-monitor 的跨仓库引用；monitor 的 import 被 try/except 包住，失败不报错 | ✅ 已修复 | `843f9a1` | 文件移回 `src/xueqiu_analyzer/`、删除 archive/ 目录；nodriver 能过 WAF 滑动验证而 playwright 不能，回退即丢数据 |
 | B-018 | 风控页被误判为「无数据」导致静默数据丢失（隐患） | 风控页判定散落 3 仓库 8 处，关键词漂移；405 正文子串误判、大小写不一致、风控与登录态混用 | ✅ 已修复 | `da91358` | 收为唯一实现 waf.py，三问题显式分离，39 条回归测试 |
+| B-019 | 「405 Forbidden」错误页漏检（标题正常、正文含 405 形态） | da91358 把 405 从正文匹配整个去掉，导致「标题正常、正文写着 405 Forbidden」的错误页漏判为正常文章 | ✅ 已修复 | `a9b42ab` | 并入 PR #54 收紧：裸「405」不做子串匹配，但认「405 forbidden / http 405 / 405 not allowed」三种形态，兼顾两边 |
 
 ---
 
@@ -377,6 +378,22 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 
 **验证**：
 - ✅ 全量 pytest 216 passed，无回归
+
+### v4.2.2 (2026-10-01) — 405 匹配收紧（并入 PR #54）
+
+**Commit**：`a9b42ab`
+
+**变更**：
+- 🐛 `waf.py` `CONTENT_PATTERNS` 新增 3 条具体形态：`"405 forbidden"` / `"http 405"` / `"405 not allowed"`，裸「405」仍不做正文子串匹配
+- 🧪 新增回归测试 `test_specific_405_forms_detected_but_bare_digits_are_not`：具体 405 形态能命中，但「营收 405 亿元」这类正常文章不误判
+
+**动机**：xueqiu-crawler PR #54 对同一 bug 用了「收紧关键词」的办法（405 Forbidden / HTTP 405 / 405 Not Allowed），而本仓库早先（da91358）是「把 405 从正文匹配整个去掉」。两个方案各有盲区：
+- 只去掉 → 漏掉「标题正常、正文写着 405 Forbidden」的错误页
+- 只收紧 → `http 405` 仍可能（低概率）出现在正常文章里
+
+合并为：裸「405」不做正文子串匹配，但认这三种具体形态，两边的好处都留下。
+
+**验证**：✅ pytest 253 passed
 
 ### v4.2.1 (2026-10-01) — 抽出 has_waf_marker 页面标记检查
 
