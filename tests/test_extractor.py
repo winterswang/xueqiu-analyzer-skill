@@ -11,6 +11,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from xueqiu_analyzer.extractor import (
     ArticleContent,
+    MissingCredentialError,
     ScrapingExtractor,
     call_deepseek_extract,
     fetch_page_html,
@@ -72,6 +73,37 @@ class TestArticleContent:
 # ── call_deepseek_extract 测试 ──────────────────────────────────────────────
 
 class TestCallDeepSeekExtract:
+    @pytest.fixture(autouse=True)
+    def _with_credential(self, monkeypatch):
+        """这三个用例依赖凭证存在 —— 显式提供，别靠本机 .env 碰运气。"""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-a-real-key")
+
+    def test_missing_credential_raises_with_actionable_message(self, monkeypatch):
+        """回归：key 缺失时必须抛出可操作的错误。
+
+        以前是带着 `Authorization: Bearer ` 发请求换一个 401，日志里只剩
+        「DeepSeek API 调用失败: HTTP Error 401」—— 排查方向被带偏。
+        2026-06-08 出过同类事故（python-dotenv 未装 → .env 从未加载 → 静默失败）。
+        """
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+        with pytest.raises(MissingCredentialError) as exc:
+            call_deepseek_extract("<html>x</html>", "https://xueqiu.com/1/2")
+
+        message = str(exc.value)
+        assert "DEEPSEEK_API_KEY" in message
+        assert ".env" in message          # 告诉去哪配
+        assert "python-dotenv" in message  # 点出最常见的那个坑
+
+    def test_missing_credential_does_not_hit_the_network(self, monkeypatch):
+        """缺少凭证时不应发出任何请求。"""
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+        with patch("xueqiu_analyzer.extractor.urllib.request.urlopen") as m:
+            with pytest.raises(MissingCredentialError):
+                call_deepseek_extract("<html>x</html>", "https://xueqiu.com/1/2")
+        m.assert_not_called()
+
     def _make_mock_response(self, content_str: str):
         """返回一个 mock，read() 返回 content_str（str 类型）的 UTF-8 编码"""
         mock_resp = MagicMock()
