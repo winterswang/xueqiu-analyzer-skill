@@ -124,11 +124,59 @@ class TestUploadCsvSet:
         assert result["success"] == []
         assert "discussions" in result["failed"]
 
-    def test_list_kb(self):
-        """list_knowledge_bases should return list with id/name."""
-        from src.xueqiu_analyzer.ima_kb_uploader import list_knowledge_bases
-        kbs = list_knowledge_bases()
-        assert isinstance(kbs, list)
-        if kbs:
-            assert "id" in kbs[0]
-            assert "name" in kbs[0]
+    def test_list_kb(self, monkeypatch):
+        """list_knowledge_bases parses the payload into id/name pairs.
+
+        This used to call the live IMA OpenAPI: it only ever passed on machines
+        with ~/.config/ima/ credentials present, and failed in CI. Mocking _api
+        turns it into an actual unit test of the parsing logic.
+        """
+        import src.xueqiu_analyzer.ima_kb_uploader as mod
+        monkeypatch.setattr(mod, "_api", lambda path, body: {
+            "code": 0,
+            "data": {
+                "addable_knowledge_base_list": [
+                    {"id": "KB1", "name": "研报库"},
+                    {"id": "KB2", "name": "笔记库"},
+                ],
+                "is_end": True,
+            },
+        })
+
+        assert mod.list_knowledge_bases() == [
+            {"id": "KB1", "name": "研报库"},
+            {"id": "KB2", "name": "笔记库"},
+        ]
+
+    def test_list_kb_paginates_until_is_end(self, monkeypatch):
+        """Pagination must follow next_cursor until is_end."""
+        import src.xueqiu_analyzer.ima_kb_uploader as mod
+        pages = [
+            {"code": 0, "data": {"addable_knowledge_base_list": [{"id": "KB1", "name": "a"}],
+                                 "is_end": False, "next_cursor": "c1"}},
+            {"code": 0, "data": {"addable_knowledge_base_list": [{"id": "KB2", "name": "b"}],
+                                 "is_end": True}},
+        ]
+        calls = []
+
+        def fake_api(path, body):
+            calls.append(body)
+            return pages[len(calls) - 1]
+
+        monkeypatch.setattr(mod, "_api", fake_api)
+
+        assert mod.list_knowledge_bases() == [
+            {"id": "KB1", "name": "a"},
+            {"id": "KB2", "name": "b"},
+        ]
+        assert calls == [{"cursor": "", "limit": 50}, {"cursor": "c1", "limit": 50}]
+
+    def test_list_kb_raises_on_api_error(self, monkeypatch):
+        """Non-zero code must raise rather than silently return an empty list."""
+        import src.xueqiu_analyzer.ima_kb_uploader as mod
+        monkeypatch.setattr(
+            mod, "_api", lambda path, body: {"code": 110021, "message": "rate limited"}
+        )
+
+        with pytest.raises(RuntimeError, match="获取知识库列表失败"):
+            mod.list_knowledge_bases()

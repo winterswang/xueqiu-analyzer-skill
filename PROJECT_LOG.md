@@ -2,10 +2,10 @@
 
 > 最后更新：2026-10-01  
 > 版本：V4.2  
-> 最近一次 `LAST_ANALYZED`：`a9b42ab`
-> 分析范围：全部历史 commit（135 个）
+> 最近一次 `LAST_ANALYZED`：`13b8b31`
+> 分析范围：全部历史 commit（140 个）
 
-<!-- @@LAST_ANALYZED: a9b42ab @@-->
+<!-- @@LAST_ANALYZED: 13b8b31 @@-->
 
 ---
 
@@ -121,6 +121,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | Click | CLI 框架 |
 | urllib | HTTP 请求 |
 | pytest | 单元测试（253 个） |
+| GitHub Actions | CI：push/PR/manual 触发 pytest |
 
 ---
 
@@ -363,6 +364,19 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 ---
 
 ## 🔄 版本记录
+
+### v4.2.3 (2026-10-01) — 添加 GitHub Actions CI
+
+**Commit**：`13b8b31`
+
+**变更**：
+- 🔨 新增 `.github/workflows/tests.yml`：GitHub Actions 在 push 到 `main`、PR、手动触发（`workflow_dispatch`）时自动跑 pytest
+  - Python 3.11 + pip 缓存 + `pip install -r requirements.txt pytest` + `pip install -e .`
+  - 单 job `pytest`，`ubuntu-latest`，超时 15 分钟，`concurrency` 同 ref 并发取消
+  - 注释说明：测试 import `xueqiu_analyzer.crawler` 会在模块级 import playwright，但装包即可，无需下载浏览器二进制
+
+**影响**：
+- 从「本地手动跑 pytest」升级为「push/PR 自动验证」，工程质量屏障补上（对应「代码质量」板块工程化维度）
 
 ### v4.1.2 (2026-10-01) — source_failures.jsonl 天级轮转
 
