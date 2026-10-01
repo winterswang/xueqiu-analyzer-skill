@@ -92,6 +92,12 @@ def contains_waf_text(text: str) -> bool:
     return any(p in head for p in CONTENT_PATTERNS)
 
 
+def has_waf_marker(html: str) -> bool:
+    """整页 HTML 是否含 WAF 注入的标记（如 ``aliyun_waf``）。"""
+    page = (html or "").lower()
+    return any(m in page for m in PAGE_MARKERS)
+
+
 def is_error_title(title: str) -> bool:
     """标题本身是不是错误页标题（精确匹配）。"""
     return (title or "").strip() in TITLE_EXACT
@@ -120,8 +126,7 @@ def is_waf_blocked(title: str, content: str = "") -> bool:
     """
     if is_error_page(title, content):
         return True
-    html = (content or "").lower()
-    return any(m in html for m in PAGE_MARKERS)
+    return has_waf_marker(content)
 
 
 def looks_like_waf_content(content: str, min_chars: int = MIN_CONTENT_CHARS) -> bool:
