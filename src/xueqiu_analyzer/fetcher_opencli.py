@@ -202,16 +202,12 @@ def fetch_discussions(code: str, limit: int = 100) -> list[dict]:
         return []
 
 
-def fetch_news(code: str, limit: int = 30) -> list[dict]:
-    """Fetch stock news feed via opencli xueqiu news (statuses/stock_timeline.json).
+def fetch_news_with_status(code: str, limit: int = 30) -> tuple[list[dict], str | None]:
+    """Fetch news while distinguishing failure from genuinely empty data.
 
-    2026-09-18: the 资讯 tab's real API (captured live, verified without the
-    md5__ tracking param). Until now news was only reachable via the
-    Playwright DOM path, which the opencli fast path skips — the fast path
-    has been silently news-less since it shipped.
-
-    Returns list of dicts: {id, title, text, source, link, created_at}
-    (empty list on failure, same contract as the other fetch_* here).
+    Returns (rows, error): error None means success, including empty data;
+    a non-None error means this source failed. Health gates must use this
+    function instead of inferring health from fetch_news() returning empty.
     """
     symbol = _to_xueqiu_symbol(code)
     try:
@@ -223,12 +219,20 @@ def fetch_news(code: str, limit: int = 30) -> list[dict]:
                 f"opencli news {symbol} 失败(rc={result.returncode}): {_err.strip()[:220]}")
             if not _quiet:
                 record_source_failure('news', symbol, result.returncode, _err)
-            return []
+            return [], f"opencli news {symbol} rc={result.returncode}: {_err.strip()[:220]}"
         data = json.loads(_clean_json(result.stdout))
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return [], f"opencli news {symbol}: expected list, got {type(data).__name__}"
+        return data, None
     except Exception as e:
         logger.debug(f"opencli news {symbol} failed: {e}")
-        return []
+        return [], f"opencli news {symbol} exception: {e}"
+
+
+def fetch_news(code: str, limit: int = 30) -> list[dict]:
+    """Fetch stock news feed; keeps the historical empty-on-failure contract."""
+    rows, _error = fetch_news_with_status(code, limit=limit)
+    return rows
 
 
 def fetch_replies(post_url: str, limit: int = 20) -> list[dict]:
