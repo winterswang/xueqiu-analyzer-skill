@@ -33,6 +33,7 @@ from .models import (
     CrawlResult, Discussion, News, Notice, Article,
 )
 from .extractor import ScrapingExtractor
+from .waf import contains_waf_text
 
 logger = logging.getLogger(__name__)
 
@@ -636,7 +637,11 @@ class XueqiuCrawler:
     def _check_login_status(self, page: Page) -> bool:
         try:
             content = page.content()
-            if '访问验证' in content or '请按住滑块' in content:
+            # 风控关键词表在 xueqiu_analyzer.waf（唯一实现），这里只做 content-only 匹配。
+            # 注意返回值语义沿用原样：风控页也返回 False（「不认为已登录」）——
+            # 严格说风控 ≠ 未登录，调用方会因此走登录流程而不是退避，属既有行为，
+            # 本次只统一判定来源，不改这条语义。
+            if contains_waf_text(content):
                 return False
             if 'snb-container' in content or page.query_selector('[class*="user-name"]'):
                 return True
