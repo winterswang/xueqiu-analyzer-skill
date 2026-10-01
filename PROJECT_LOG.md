@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
-> 最后更新：2026-08-04  
-> 版本：V4.1  
-> 最近一次 `LAST_ANALYZED`：`3c273e0`
+> 最后更新：2026-10-01
+> 版本：V4.1
+> 最近一次 `LAST_ANALYZED`：`38a482b`
 > 分析范围：全部历史 commit（132 个）
 
-<!-- @@LAST_ANALYZED: 3c273e0 @@-->
+<!-- @@LAST_ANALYZED: 38a482b @@-->
 
 ---
 
@@ -197,6 +197,15 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 - **决策**：统一到 `~/.xueqiu_crawler/`，提供 `XueqiuStockCrawlerV2.init()` 自动创建配置
 - **影响**：路径硬编码问题仍有，未做平台兼容
 
+### ADR-010：失败日志天级轮转（不做大小截断）
+
+- **时间**：2026-10-01
+- **背景**：`record_source_failure` 只追加不清理，`logs/source_failures.jsonl` 无限增长；monitor 的 health_check 每次全量读取该文件过滤当天记录，文件越大越慢，历史失败永久堆积
+- **决策**：新增 `_rotate_fail_log()`，仅在「文件最后写入日 < 今天」时轮转 —— 旧文件归档到 `logs/source_failures/YYYY-MM-DD.jsonl`，默认保留 30 天
+- **关键约束**：刻意不做按大小截断 —— 轮转只发生在跨天时，同一天内不动文件，保证读取方（health_check / cli）仍只需读固定路径即可拿到当天全部记录
+- **替代方案**：按文件大小截断（truncate）—— 被否决，因为会丢掉当天早期失败记录，重新触发「静默无失败」类 bug
+- **影响**：`fetcher_opencli.py` 新增 `_rotate_fail_log()` + `FAIL_ARCHIVE_KEEP_DAYS=30`；写失败仍不影响主流程
+
 ---
 
 ## 🚀 功能特性
@@ -256,6 +265,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-013 | max_tokens 0 被当作 falsy 覆盖 | `max_tokens or config` 逻辑 | ✅ 已修复 | `1f8ca71` | 改为 `max_tokens is not None` |
 | B-014 | openclaw.json 异常静默吞 | `except Exception: pass` 无日志 | ✅ 已修复 | `1f8ca71` | 改为 `logger.debug(...)` |
 | B-015 | 互动量全为零（like/comment/forward） | 4 处 Discussion 构造路径均未填充互动字段，dataclass 默认 0 | ✅ 已修复 | `3c273e0` | 为 API/opencli/HTML 三条路径全部补抓互动量，新增 5 个测试 |
+| B-016 | source_failures.jsonl 无限增长 | record_source_failure 只追加不清理，无轮转/归档机制 | ✅ 已修复 | `38a482b` | 新增 `_rotate_fail_log()` 跨天归档到 `logs/source_failures/YYYY-MM-DD.jsonl`，保留 30 天；同天内不动文件 |
 
 ---
 
@@ -324,6 +334,21 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 ---
 
 ## 🔄 版本记录
+
+### v4.1.2 (2026-10-01) — source_failures.jsonl 天级轮转
+
+**Commit**：`38a482b`
+
+**修复**：
+- 🐛 `fetcher_opencli.py` 的 `record_source_failure` 只追加不清理，`logs/source_failures.jsonl` 无限增长 —— monitor 的 health_check 每次全量读取该文件过滤当天记录，文件越大越慢，历史失败永久堆积
+- 🔧 新增 `_rotate_fail_log()`：仅在「文件最后写入日 < 今天」时轮转，旧文件归档到 `logs/source_failures/YYYY-MM-DD.jsonl`，默认保留 30 天
+- 🧪 `test_source_fail_rotation.py` 新增 7 个测试（同日不动、跨天归档、空文件、文件缺失、过期归档清理、同日追加、跨天轮转）
+
+**关键设计**：
+- 刻意不做按大小截断 —— 轮转只发生在跨天时，同一天内不动文件，保证读取方（health_check / cli）仍只需读固定路径即可拿到当天全部记录，避免「静默无失败」类 bug 复发
+
+**验证**：
+- ✅ 全量 pytest 216 passed，无回归
 
 ### v4.1.1 (2026-08-04) — 互动量数据修复
 
