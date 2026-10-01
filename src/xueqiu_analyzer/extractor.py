@@ -16,21 +16,51 @@ from dataclasses import dataclass, asdict
 from typing import Optional, List
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 # 防御性加载 .env（模块被独立 import 时也能拿到环境变量）
+_dotenv_path = Path(__file__).resolve().parent.parent.parent / '.env'
 try:
     from dotenv import load_dotenv
-    _dotenv_path = Path(__file__).resolve().parent.parent.parent / '.env'
     if _dotenv_path.exists():
         load_dotenv(_dotenv_path, override=False)
 except ImportError:
-    pass
-
-logger = logging.getLogger(__name__)
+    # 不能静默：python-dotenv 缺失 → .env 不会被加载 → key 恒为空 →
+    # 请求带着 `Authorization: Bearer ` 发出去，换回一个语焉不详的 401。
+    # 2026-06-08 正是这个事故（见 DAILY_LOG.md）。
+    logger.warning(
+        "python-dotenv 未安装，%s 不会被加载，只能依赖已导出的环境变量。"
+        "需要 .env 生效请执行 pip install python-dotenv。", _dotenv_path,
+    )
 
 # DeepSeek API 配置
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
+
+
+class MissingCredentialError(RuntimeError):
+    """凭证未配置 —— 与「API 调用失败」区分开。
+
+    以前 key 为空照样发请求，拿回 401，日志只留下「DeepSeek API 调用失败:
+    HTTP Error 401」—— 看不出是配置问题，只会往网络或额度的方向排查。
+    """
+
+
+def _deepseek_api_key() -> str:
+    """调用时读取 DeepSeek API key，缺失则抛错。
+
+    刻意不在导入时缓存成模块常量：那样取值时机取决于 import 顺序与 .env
+    加载先后，曾出现过「环境变量明明设了却读到空」。
+    """
+    key = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+    if not key:
+        raise MissingCredentialError(
+            "DEEPSEEK_API_KEY 未配置。\n"
+            f"  读取顺序: 环境变量 DEEPSEEK_API_KEY → {_dotenv_path}\n"
+            "  修复: 在 .env 写入 DEEPSEEK_API_KEY=sk-...，或导出同名环境变量。\n"
+            "  注意: .env 存在但未生效时，检查 python-dotenv 是否已安装。"
+        )
+    return key
 
 # Playwright 配置（复用 crawler.py 的 session/cookie）
 PLAYWRIGHT_HEADLESS = True
@@ -141,11 +171,15 @@ def call_deepseek_extract(text_content: str, url: str) -> ArticleContent:
         "temperature": 0.1,
     }
 
+    # 提前校验凭证：缺失时抛出可操作的错误，而不是发一个 Bearer 空的请求换 401。
+    # 刻意放在 try 之外 —— 这是配置问题，不该被「调用失败」的兜底吞掉。
+    api_key = _deepseek_api_key()
+
     req = urllib.request.Request(
         f"{DEEPSEEK_BASE_URL}/chat/completions",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         method="POST"
