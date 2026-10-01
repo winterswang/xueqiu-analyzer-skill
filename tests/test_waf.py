@@ -92,6 +92,15 @@ def test_waf_blocked_covers_error_page():
     assert waf.is_waf_blocked(title="正常", content="请按住滑块") is True
 
 
+def test_has_waf_marker_is_page_wide_and_case_insensitive():
+    """页面标记查的是整页 HTML（不只是头部），且大小写不敏感。"""
+    deep = "x" * 5000 + "ALIYUN_WAF"
+    assert waf.has_waf_marker(deep) is True
+    assert waf.has_waf_marker("这里没有标记") is False
+    # 头部扫描（is_error_page）看不到 5000 字之后的标记，页面标记检查能看到
+    assert waf.contains_waf_text(deep) is False
+
+
 # ── looks_like_waf_content ──────────────────────────────────
 
 def test_short_content_is_never_waf():

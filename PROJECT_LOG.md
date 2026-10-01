@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
-> 最后更新：2026-10-01
-> 版本：V4.1
-> 最近一次 `LAST_ANALYZED`：`38a482b`
-> 分析范围：全部历史 commit（132 个）
+> 最后更新：2026-10-01  
+> 版本：V4.2  
+> 最近一次 `LAST_ANALYZED`：`da91358`
+> 分析范围：全部历史 commit（133 个）
 
-<!-- @@LAST_ANALYZED: 38a482b @@-->
+<!-- @@LAST_ANALYZED: da91358 @@-->
 
 ---
 
@@ -70,6 +70,7 @@
 | 编排器 | `orchestrator.py` | 349 | 迭代爬取 + 硬指标检测 + LLM 评估 + 分析全流程编排 |
 | 数据质量 | `quality.py` | 279 | Layer 1 硬指标检测器：内容完整率/财务填充率/健康分 |
 | 爬虫引擎 | `crawler.py` | 1688 | Playwright + 雪球 API 混合爬虫：讨论/资讯/公告/文章 + 互动量提取 |
+| 爬虫引擎（反检测） | `crawler_nodriver.py` | 570 | nodriver 反检测爬虫：绕过阿里云 WAF 滑动验证，Tier 1 引擎，失败回退 playwright |
 | 评估器 | `evaluator.py` | 281 | Layer 2 LLM 信息充分性评估（8 主题打分） |
 | 分析器 | `analyzer.py` | 202 | 深度投资分析报告生成（LLM Prompt） |
 | LLM 客户端 | `llm_client.py` | 170 | 统一 LLM 调用封装（chat/evaluate/analyze/simple_chat） |
@@ -77,6 +78,7 @@
 | 配置加载 | `config.py` | 93 | YAML + 环境变量 + openclaw.json fallback 链 |
 | 数据模型 | `models.py` | 281 | CrawlResult/EvaluationResult/FinancialData 等 dataclass |
 | CLI 入口 | `cli.py` | 251 | Click 命令行接口（analyze/crawl/evaluate/reanalyze/cookies） |
+| 风控判定 | `waf.py` | 178 | 风控页判定唯一实现：is_error_page / is_waf_blocked / classify_failure / needs_login |
 
 ### V2 遗留代码
 
@@ -111,13 +113,14 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 |------|------|
 | Python 3.11+ | 主语言 |
 | Playwright | 浏览器自动化爬虫 |
+| nodriver | 反检测爬虫引擎（绕过 WAF 滑动验证） |
 | DeepSeek / GLM (LLM) | AI 评估+分析引擎 |
 | 雪球 API | 实时股票报价 |
 | financial-sdk | 财务指标（毛利率/净利率/ROE/ROIC） |
 | PyYAML | 配置文件 |
 | Click | CLI 框架 |
 | urllib | HTTP 请求 |
-| pytest | 单元测试（51 个） |
+| pytest | 单元测试（248 个） |
 
 ---
 
@@ -206,6 +209,24 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 - **替代方案**：按文件大小截断（truncate）—— 被否决，因为会丢掉当天早期失败记录，重新触发「静默无失败」类 bug
 - **影响**：`fetcher_opencli.py` 新增 `_rotate_fail_log()` + `FAIL_ARCHIVE_KEEP_DAYS=30`；写失败仍不影响主流程
 
+### ADR-011：风控页判定收为唯一实现（waf.py）
+
+- **时间**：2026-10-01
+- **Commit**：`da91358`
+- **背景**：雪球被风控拦下时返回「验证页」而非 HTTP 错误，认不出来就被当成「这只股票确实没有数据」→ 静默数据丢失。判定逻辑散落在 3 个仓库 8 处，关键词集合已漂移，同一页在不同环节结论不同。具体分歧：
+  - `crawler_nodriver._is_content_error` 大小写敏感 vs `opencli_extractor._is_error_page` 先 `.lower()` → 「Request has been blocked」能被重试逻辑抓到、却写进磁盘
+  - `opencli_extractor` 把 `"405"` 当正文子串匹配 → 任何开头 500 字含 405 的正常文章都被误判并重试
+  - `crawler_nodriver` 同一文件里 `_detect_waf` 查 `aliyun_waf` 标记、`_is_content_error` 不查 → 两函数把同一页判成不同结果
+  - `analyzer/crawler._check_login_status` 拿风控关键词判断登录态 → 风控页被误读成「未登录」
+- **决策**：新增 `src/xueqiu_analyzer/waf.py` 作为唯一实现，把三个不同问题显式分开：
+  - `is_error_page`（丢弃/过滤）
+  - `is_waf_blocked`（重试/重启浏览器）
+  - `classify_failure`（失败归类）
+  - 登录墙单列 `needs_login`，不再与风控混用
+  - 权威模式表集中管理：`TITLE_EXACT`（405/403/滑动验证页面，标题精确匹配）、`CONTENT_PATTERNS`（11 个，大小写不敏感）、`PAGE_MARKERS`（aliyun_waf）、`AUTH_REQUIRED_PATTERNS`（登录墙）
+- **跨仓库一致性**：opencli 适配器（`xueqiu-crawler/opencli-adapters/*.js`）由 `sync_waf_patterns.py` 从本模块生成 `BLOCK_GUARD` 正则，并有漂移测试卡住两边不各走各的
+- **影响**：`fetcher_opencli._classify_reason` → `waf.classify_failure`；`crawler._check_login_status` → `waf.contains_waf_text`（返回值语义保留）；新增 39 条回归测试，全量 248 passed
+
 ---
 
 ## 🚀 功能特性
@@ -243,6 +264,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | V2.2.1 | 2026-05-24 | 代码审查修复：删除 archive（1302行）、统一 LLM 客户端、修复硬编码 |
 | V3.0 (#2 #3) | 2026-05-24 | Layer 1 硬指标 + financial-sdk 替换 + 包结构重构 |
 | V3.0.1 | 2026-05-25 | 代码审查清理：未使用 import、空 f-string、异常日志、max_tokens 修复 |
+| V4.2.0 | 2026-10-01 | 风控页判定收为唯一实现 waf.py + 39 条回归测试 |
 
 ---
 
@@ -266,6 +288,8 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-014 | openclaw.json 异常静默吞 | `except Exception: pass` 无日志 | ✅ 已修复 | `1f8ca71` | 改为 `logger.debug(...)` |
 | B-015 | 互动量全为零（like/comment/forward） | 4 处 Discussion 构造路径均未填充互动字段，dataclass 默认 0 | ✅ 已修复 | `3c273e0` | 为 API/opencli/HTML 三条路径全部补抓互动量，新增 5 个测试 |
 | B-016 | source_failures.jsonl 无限增长 | record_source_failure 只追加不清理，无轮转/归档机制 | ✅ 已修复 | `38a482b` | 新增 `_rotate_fail_log()` 跨天归档到 `logs/source_failures/YYYY-MM-DD.jsonl`，保留 30 天；同天内不动文件 |
+| B-017 | crawler_nodriver.py 误归档 → monitor 静默回退 playwright | 归档判定仅 grep 本仓库，未发现 xueqiu-monitor 的跨仓库引用；monitor 的 import 被 try/except 包住，失败不报错 | ✅ 已修复 | `843f9a1` | 文件移回 `src/xueqiu_analyzer/`、删除 archive/ 目录；nodriver 能过 WAF 滑动验证而 playwright 不能，回退即丢数据 |
+| B-018 | 风控页被误判为「无数据」导致静默数据丢失（隐患） | 风控页判定散落 3 仓库 8 处，关键词漂移；405 正文子串误判、大小写不一致、风控与登录态混用 | ✅ 已修复 | `da91358` | 收为唯一实现 waf.py，三问题显式分离，39 条回归测试 |
 
 ---
 
@@ -284,6 +308,8 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TD-010 | API Key 回退链过长 | 多种回退路径 | P2 | 🟡 部分解决 | V3 简化了但仍有 5 种 |
 | TD-011 | max_tokens falsy | `max_tokens or 8000` 将 0 当 falsy | P2 | ✅ 已解决 | 1f8ca71 |
 | TD-012 | 静默吞异常 | `_load_openclaw_provider` 无日志 | P2 | ✅ 已解决 | 1f8ca71 |
+| TD-013 | 跨仓库引用不可见 | 归档判定仅 grep 单仓库，未覆盖外部 consumer（xueqiu-monitor），导致误归档 | P2 | 🟡 部分解决 | 归档决策流程需纳入跨仓库引用检测 |
+| TD-014 | 语义遗留 | `_check_login_status` 遇风控页返回 False，调用方走登录流程而非退避等待（作者注释标注的既有行为） | P2 | 🔴 未解决 | 稳定性 |
 
 ---
 
@@ -349,6 +375,43 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 
 **验证**：
 - ✅ 全量 pytest 216 passed，无回归
+
+### v4.2.0 (2026-10-01) — 风控页判定统一重构
+
+**Commit**：`da91358`
+
+**变更**：
+- 🔧 新增 `src/xueqiu_analyzer/waf.py`（178 行）：风控页判定的唯一实现
+  - `is_error_page`（丢弃/过滤）、`is_waf_blocked`（重试/重启浏览器）、`classify_failure`（失败归类）
+  - 登录墙单列 `needs_login`，与风控分离（不再拿风控关键词判登录态）
+  - 权威模式表：`TITLE_EXACT`（405/403/滑动验证页面精确匹配）、`CONTENT_PATTERNS`（11 个，大小写不敏感）、`PAGE_MARKERS`（aliyun_waf）
+  - `block_guard_js()` 生成 opencli 适配器用的 BLOCK_GUARD 正则，含正则元字符的模式直接抛错
+- 🔧 `fetcher_opencli._classify_reason` → `waf.classify_failure`
+- 🔧 `crawler._check_login_status` → `waf.contains_waf_text`（返回值语义保留：风控页仍返回 False）
+- 🧪 新增 `test_waf.py`（39 条测试），覆盖每处历史分歧的回归断言
+
+**修复的隐患**：
+- 🐛 `"405"` 正文子串误判（任何开头 500 字含 405 的正常文章被误判重试）→ 改为标题精确匹配
+- 🐛 大小写敏感不一致（「Request has been blocked」能被重试抓到却写进磁盘）→ 统一大小写不敏感
+- 🐛 同页不同结论（`_detect_waf` 查标记、`_is_content_error` 不查）→ `is_waf_blocked ⊃ is_error_page` 关系显式化
+- 🐛 风控页被误读为「未登录」触发重新登录 → `needs_login` 单独判断
+
+**验证**：
+- ✅ pytest 248 passed（新增 39 条 waf 测试）
+
+### v4.1.3 (2026-10-01) — 撤销 crawler_nodriver.py 误归档
+
+**Commit**：`843f9a1`
+
+**修复**：
+- 🐛 撤销上一提交（`b815846`）对 `crawler_nodriver.py` 的误归档。归档依据「全仓库 0 处 .py 引用」不成立——该模块被**另一个仓库** `xueqiu-monitor` 的 `src/crawler.py:559` 引用（`from xueqiu_analyzer.crawler_nodriver import XueqiuNodriverCrawler`），是 monitor 的 Tier 1 爬取引擎
+  - 引用被 try/except 包裹，归档后不崩，而是每次**静默回退 playwright**
+  - 同段代码注释证明 nodriver 能过 WAF 滑动验证、playwright 不能，回退 = 撞滑块 = 丢数据
+- 🔨 文件移回 `src/xueqiu_analyzer/crawler_nodriver.py`（纯 rename，内容 100% 不变），删除仅为它建立的 `archive/` 目录
+
+**验证**：
+- ✅ `from xueqiu_analyzer.crawler_nodriver import XueqiuNodriverCrawler` 成立
+- ✅ pytest 209 passed
 
 ### v4.1.1 (2026-08-04) — 互动量数据修复
 
