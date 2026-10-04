@@ -17,9 +17,11 @@ import logging
 import re
 import shutil
 import subprocess
+import time
 from typing import Any
 
 from .waf import classify_failure
+from .opencli_call_logger import record_opencli_call
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +121,14 @@ def _run(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """Run an opencli command."""
     cmd = ["opencli"] + list(args)
     logger.debug(f"opencli: {' '.join(cmd)}")
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    started_at = time.time()
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except Exception as exc:
+        record_opencli_call(cmd, started_at, error=exc, caller="_run")
+        raise
+    record_opencli_call(cmd, started_at, result=result, caller="_run")
+    return result
 
 
 def _clean_json(stdout: str) -> str:
