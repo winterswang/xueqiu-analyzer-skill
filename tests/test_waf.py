@@ -82,6 +82,13 @@ def test_specific_405_forms_detected_but_bare_digits_are_not():
     assert waf.contains_waf_text("贵州茅台 405 亿元营收，同比增长 11%") is False
 
 
+def test_xueqiu_human_verification_page_detected():
+    """2026-10-04 实测：check.xueqiu.com/captcha 的文案未命中旧模式。"""
+    content = "访问触发保护，请完成人机验证 检测到当前网络环境的访问频率异常"
+    assert waf.contains_waf_text(content) is True
+    assert waf.is_waf_blocked(title="访问提示 - 雪球", content=content) is True
+
+
 def test_only_head_is_scanned():
     body = "正" * (waf.CONTENT_HEAD_CHARS + 50) + "滑动验证"
     assert waf.is_error_page(title="正常标题", content=body) is False
