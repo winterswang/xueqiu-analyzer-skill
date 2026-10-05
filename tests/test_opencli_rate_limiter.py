@@ -58,3 +58,43 @@ def test_local_browser_extract_and_help_do_not_wait(tmp_path, monkeypatch):
 
     assert extract["enabled"] is False
     assert help_slot["enabled"] is False
+
+
+def test_browser_open_is_throttled(tmp_path, monkeypatch):
+    """browser open 会导航到目标站点、发起雪球请求，必须限速。
+
+    回归（2026-10-05）：判定条件原先写成 `values[3] == "open"`，而
+    `["opencli","browser",<session>,"open",<url>]` 去头后 values[3] 是 **URL**，
+    拿 URL 和 "open" 比永远不成立 —— browser open 从未被限速。
+    当天台账实测：130 次调用里 37 次是 browser:open，限速器只记了 17 次，
+    覆盖约 13% 的流量，漏掉的恰恰是最重的页面导航。
+    """
+    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "on")
+    monkeypatch.setenv(
+        "XUEQIU_OPENCLI_THROTTLE_STATE", str(tmp_path / "throttle.json")
+    )
+    monkeypatch.setattr(limiter.time, "sleep", lambda _seconds: None)
+
+    slot = limiter.acquire_opencli_slot(
+        "detail",
+        ["opencli", "browser", "detailfetch0", "open", "https://xueqiu.com/1/2"],
+    )
+
+    assert slot["enabled"] is True
+
+
+def test_should_throttle_covers_site_requests_only():
+    """枚举式确认各类命令的判定，避免再出现「形态对不上、静默漏掉」。"""
+    assert limiter._should_throttle(
+        ["opencli", "browser", "s0", "open", "https://xueqiu.com/1/2"]
+    ) is True
+    assert limiter._should_throttle(
+        ["opencli", "xueqiu", "user-articles", "--user_id", "1", "-f", "json"]
+    ) is True
+    # 本地操作：不发站点请求
+    assert limiter._should_throttle(["opencli", "browser", "s0", "extract"]) is False
+    assert limiter._should_throttle(["opencli", "browser", "s0", "get", "title"]) is False
+    assert limiter._should_throttle(["opencli", "browser", "s0", "close"]) is False
+    assert limiter._should_throttle(
+        ["opencli", "xueqiu", "user-articles", "--help"]
+    ) is False
