@@ -13,6 +13,19 @@ from typing import Any
 
 DEFAULT_STATE_PATH = Path.home() / ".opencli" / "xueqiu-throttle.json"
 
+# 默认限速策略。这几个值是**策略决定**，不是实现细节：
+#   - 命令起始时间之间随机间隔 6–12 秒（均值 9 秒）→ 单进程峰值上限 ≈ 6.7 次/分
+#   - 每 30 次调用插一次 45–75 秒长停，打断"匀速机器"的形态
+# 2026-10-05 由 12–24 秒收到 6–12 秒：证据显示被风控拦截那次是当天**第一次**
+# 调用（此前 14 小时调用数为 0），即拦截并非即时频率所致；把爬取拖慢一倍
+# 收益存疑。收到 6–12 秒后峰值上限 ~6.7 次/分，仍低于修复 browser open 限速
+# 之前实测的 10 次/分。全部可用环境变量覆盖，无需改代码。
+DEFAULT_MIN_DELAY_SECONDS = 6.0
+DEFAULT_MAX_DELAY_SECONDS = 12.0
+DEFAULT_LONG_PAUSE_EVERY = 30
+DEFAULT_LONG_PAUSE_MIN_SECONDS = 45.0
+DEFAULT_LONG_PAUSE_MAX_SECONDS = 75.0
+
 
 def _env_float(name: str, default: float) -> float:
     try:
@@ -98,11 +111,11 @@ def acquire_opencli_slot(
         os.environ.get("XUEQIU_OPENCLI_THROTTLE_STATE", str(DEFAULT_STATE_PATH))
     ))
     lock_path = state_path.with_suffix(state_path.suffix + ".lock")
-    min_delay = _env_float("XUEQIU_OPENCLI_MIN_DELAY_SECONDS", 12.0)
-    max_delay = max(min_delay, _env_float("XUEQIU_OPENCLI_MAX_DELAY_SECONDS", 24.0))
-    long_every = _env_int("XUEQIU_OPENCLI_LONG_PAUSE_EVERY", 30)
-    long_min = _env_float("XUEQIU_OPENCLI_LONG_PAUSE_MIN_SECONDS", 45.0)
-    long_max = max(long_min, _env_float("XUEQIU_OPENCLI_LONG_PAUSE_MAX_SECONDS", 75.0))
+    min_delay = _env_float("XUEQIU_OPENCLI_MIN_DELAY_SECONDS", DEFAULT_MIN_DELAY_SECONDS)
+    max_delay = max(min_delay, _env_float("XUEQIU_OPENCLI_MAX_DELAY_SECONDS", DEFAULT_MAX_DELAY_SECONDS))
+    long_every = _env_int("XUEQIU_OPENCLI_LONG_PAUSE_EVERY", DEFAULT_LONG_PAUSE_EVERY)
+    long_min = _env_float("XUEQIU_OPENCLI_LONG_PAUSE_MIN_SECONDS", DEFAULT_LONG_PAUSE_MIN_SECONDS)
+    long_max = max(long_min, _env_float("XUEQIU_OPENCLI_LONG_PAUSE_MAX_SECONDS", DEFAULT_LONG_PAUSE_MAX_SECONDS))
 
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
