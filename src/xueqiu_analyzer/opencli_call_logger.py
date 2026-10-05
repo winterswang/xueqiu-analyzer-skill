@@ -85,8 +85,18 @@ def record_opencli_call(
     source: str | None = None,
     caller: str | None = None,
     throttle: dict[str, Any] | None = None,
+    expect_miss: bool = False,
 ) -> None:
-    """Append one completed opencli invocation as a single JSON line."""
+    """Append one completed opencli invocation as a single JSON line.
+
+    ``expect_miss`` marks a call that is part of a *probe sequence*, where a
+    non-zero exit is a normal outcome rather than an error. The canonical case
+    is ``detail_fetcher.fetch_page_opencli``, which walks a list of candidate
+    selectors and moves on when one matches nothing. ``ok`` still reports what
+    actually happened (the exit code is not rewritten); this flag only tells a
+    reader how to interpret it — otherwise every article looks like it failed
+    three times before succeeding.
+    """
     path = log_path()
     if path is None:
         return
@@ -118,6 +128,9 @@ def record_opencli_call(
         "pid": os.getpid(),
         "ppid": os.getppid(),
     }
+    if expect_miss:
+        # 只在为真时写，避免给台账每行都加字段（台账会涨到 20MB 才轮转）
+        record["expect_miss"] = True
     if throttle:
         record["throttle_wait_ms"] = round(
             float(throttle.get("waited_seconds", 0)) * 1000, 2

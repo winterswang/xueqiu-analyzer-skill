@@ -51,3 +51,45 @@ def test_fetcher_run_writes_one_jsonl_record(tmp_path, monkeypatch):
     assert records[0]["operation"] == "comments"
     assert records[0]["ok"] is False
     assert records[0]["error"] == "blocked"
+
+
+# ── 探针未命中 ≠ 失败 ──────────────────────────────────────────────────────
+#
+# 2026-10-05 实测：monitor 的 detail_fetcher 会按精确度顺序试 8 个正文选择器，
+# 没命中就 continue，命中到 300 字才 break。两个页面各留 3 条 rc=2，台账于是
+# 把 browser:extract 报成「75% 失败」—— 其实两次抓取都成功了，只是各探测了
+# 3 次。假警报会淹掉真失败，所以调用方要能声明「这次未命中是预期的」。
+
+
+def test_expect_miss_marks_probe_but_keeps_ok_faithful(tmp_path, monkeypatch):
+    """ok 仍如实反映退出码，expect_miss 只多带一个解释标记。"""
+    log_path = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("XUEQIU_OPENCLI_LOG", str(log_path))
+    result = SimpleNamespace(returncode=2, stdout='{"error":"no match"}', stderr="")
+
+    record_opencli_call(
+        ["opencli", "browser", "detailfetch0", "extract", "--selector", "div.article"],
+        started_at=0,
+        result=result,
+        caller="_opencli",
+        expect_miss=True,
+    )
+    record = json.loads(log_path.read_text(encoding="utf-8"))
+
+    assert record["ok"] is False        # 退出码没被改写
+    assert record["returncode"] == 2
+    assert record["expect_miss"] is True
+
+
+def test_expect_miss_absent_by_default(tmp_path, monkeypatch):
+    """不给标记时**不写这个字段** —— 台账要涨到 20MB 才轮转，别每行都加。"""
+    log_path = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("XUEQIU_OPENCLI_LOG", str(log_path))
+    result = SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    record_opencli_call(
+        ["opencli", "xueqiu", "news", "PDD"], started_at=0, result=result, caller="unit"
+    )
+    record = json.loads(log_path.read_text(encoding="utf-8"))
+
+    assert "expect_miss" not in record
