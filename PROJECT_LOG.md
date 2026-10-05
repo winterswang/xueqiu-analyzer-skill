@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
-> 最后更新：2026-10-02  
-> 版本：V4.2  
-> 最近一次 `LAST_ANALYZED`：`2c87ed4`
-> 分析范围：全部历史 commit（142 个）
+> 最后更新：2026-10-05  
+> 版本：V4.3  
+> 最近一次 `LAST_ANALYZED`：`4a404be`
+> 分析范围：全部历史 commit（148 个）
 
-<!-- @@LAST_ANALYZED: 2c87ed4 @@-->
+<!-- @@LAST_ANALYZED: 4a404be @@-->
 
 ---
 
@@ -79,6 +79,8 @@
 | 数据模型 | `models.py` | 281 | CrawlResult/EvaluationResult/FinancialData 等 dataclass |
 | CLI 入口 | `cli.py` | 251 | Click 命令行接口（analyze/crawl/evaluate/reanalyze/cookies） |
 | 风控判定 | `waf.py` | 190 | 风控页判定唯一实现：is_error_page / is_waf_blocked / classify_failure / needs_login / has_waf_marker |
+| 限速器 | `opencli_rate_limiter.py` | 151 | 跨进程随机限速：状态文件调度命令起始时间，默认间隔 6–12 秒 + 每 30 次 45–75 秒长停 |
+| 调用台账 | `opencli_call_logger.py` | 139 | opencli 每次调用追加 JSONL 台账（含 throttle 等待/预留时长），供峰值复盘 |
 
 ### V2 遗留代码
 
@@ -120,7 +122,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | PyYAML | 配置文件 |
 | Click | CLI 框架 |
 | urllib | HTTP 请求 |
-| pytest | 单元测试（268 个） |
+| pytest | 单元测试（280 个） |
 | GitHub Actions | CI：push/PR/manual 触发 pytest |
 
 ---
@@ -228,6 +230,15 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 - **跨仓库一致性**：opencli 适配器（`xueqiu-crawler/opencli-adapters/*.js`）由 `sync_waf_patterns.py` 从本模块生成 `BLOCK_GUARD` 正则，并有漂移测试卡住两边不各走各的
 - **影响**：`fetcher_opencli._classify_reason` → `waf.classify_failure`；`crawler._check_login_status` → `waf.contains_waf_text`（返回值语义保留）；新增 39 条回归测试，全量 248 passed
 
+### ADR-012：opencli 限速默认参数作为「策略决定」显式固定
+
+- **时间**：2026-10-05
+- **Commit**：`4a404be`
+- **背景**：限速参数（间隔/长停）原本是 `_env_*` 调用里的字面量默认值，既没说明「为什么是这个值」，也没有东西阻止它们被无意识改掉；12–24 秒的默认间隔缺乏证据支撑（2026-10-05 被风控拦截那次是当天第一次调用，此前 14 小时调用数为 0），却把爬取拖慢一倍
+- **决策**：五个默认值抽成具名常量 `DEFAULT_*`，注释写明它们是**策略决定**而非实现细节，并记下「为什么是 6–12」的推理（均值 9 秒 → 峰值上限 ≈ 6.7 次/分，仍低于修复 browser open 限速前的 10 次/分实测值）
+- **锁定机制**：`test_default_interval_policy_is_pinned` 锁住策略值（要调参就得连同测试一起改，杜绝静默漂移）；`test_default_band_used_when_env_absent` 确认无环境变量时预定间隔落在默认 band 内
+- **影响**：默认间隔 12–24 → 6–12 秒（130 次调用预计从 43 分钟缩到 24 分钟）；全部仍可用 `XUEQIU_OPENCLI_*` 环境变量覆盖，无需改代码
+
 ---
 
 ## 🚀 功能特性
@@ -251,6 +262,8 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | F-015 | financial-sdk 集成 | ✅ 完成 | V3 | 替换 AkShare，获取毛利率/净利率/ROE/ROIC |
 | F-016 | 纯 API 模式爬虫 | ❌ 已回滚 | — | 尝试替代 Playwright 但丢失社区讨论数据 |
 | F-017 | 单元测试 | ✅ 完成 | V3 | 51 个测试：quality/evaluator/config/模型序列化 |
+| F-018 | opencli 调用台账 | ✅ 完成 | V4.3 | 每次 opencli 调用追加 JSONL 日志（含 throttle 等待/预留时长），支持峰值复盘 |
+| F-019 | opencli 随机限速 | ✅ 完成 | V4.3 | 跨进程随机限速：状态文件调度命令起始时间，默认间隔 6–12 秒 + 每 30 次 45–75 秒长停 |
 
 ### 版本演进
 
@@ -266,6 +279,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | V3.0 (#2 #3) | 2026-05-24 | Layer 1 硬指标 + financial-sdk 替换 + 包结构重构 |
 | V3.0.1 | 2026-05-25 | 代码审查清理：未使用 import、空 f-string、异常日志、max_tokens 修复 |
 | V4.2.0 | 2026-10-01 | 风控页判定收为唯一实现 waf.py + 39 条回归测试 |
+| V4.3.0 | 2026-10-04 | opencli 调用台账 + 跨进程随机限速（默认间隔 6–12 秒） |
 
 ---
 
@@ -293,6 +307,8 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-018 | 风控页被误判为「无数据」导致静默数据丢失（隐患） | 风控页判定散落 3 仓库 8 处，关键词漂移；405 正文子串误判、大小写不一致、风控与登录态混用 | ✅ 已修复 | `da91358` | 收为唯一实现 waf.py，三问题显式分离，39 条回归测试 |
 | B-019 | 「405 Forbidden」错误页漏检（标题正常、正文含 405 形态） | da91358 把 405 从正文匹配整个去掉，导致「标题正常、正文写着 405 Forbidden」的错误页漏判为正常文章 | ✅ 已修复 | `a9b42ab` | 并入 PR #54 收紧：裸「405」不做子串匹配，但认「405 forbidden / http 405 / 405 not allowed」三种形态，兼顾两边 |
 | B-020 | extractor 缺 key 时静默 401，日志语焉不详 | `DEEPSEEK_API_KEY` 在导入时读成模块常量；key 为空仍发 `Authorization: Bearer ` 空请求换 401；`python-dotenv` 缺失被 `except ImportError: pass` 静默吞掉 | ✅ 已修复 | `2e04064` | 新增 `MissingCredentialError` + `_deepseek_api_key()` 调用时读取，缺失抛带修复指引的错误；dotenv 缺失改 `logger.warning` |
+| B-021 | 人工验证页漏检（check.xueqiu.com/captcha） | waf 模式表缺「访问触发保护 / 完成人机验证」两条文案，实测验证页未命中旧模式 | ✅ 已修复 | `0dbc58f` | CONTENT_PATTERNS 补 2 条 + 回归测试 |
+| B-022 | browser open 从未被限速（限速覆盖仅 ~13%） | `_should_throttle` 对 browser 判定写成 `values[3] == "open"`，而 values[3] 是 URL，永不成立 → 最重的页面导航漏限速 | ✅ 已修复 | `73c91b1` | 下标 values[3]→values[2]；新增 2 条测试枚举各命令判定 |
 
 ---
 
@@ -367,6 +383,41 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 ---
 
 ## 🔄 版本记录
+
+### v4.3.2 (2026-10-05) — 限速默认间隔调优 12–24 → 6–12 秒
+
+**Commit**：`4a404be`
+
+**变更**：
+- 🔧 `opencli_rate_limiter.py` 五个默认值抽成具名常量 `DEFAULT_*`，注释写明「策略决定 + 为什么是 6–12」的推理
+- 🔧 默认间隔 12–24 → 6–12 秒（均值 9 秒 → 峰值上限 ≈ 6.7 次/分，仍低于修复 browser open 限速前的 10 次/分实测）
+- 🧪 新增 `test_default_interval_policy_is_pinned` + `test_default_band_used_when_env_absent` 锁住策略
+
+**动机**：被风控拦截那次是当天第一次调用（此前 14 小时调用数为 0），说明拦截并非即时频率所致，把间隔翻倍收益存疑；收到 6–12 秒后按 130 次调用估算从 43 分钟缩到 24 分钟。全部仍可用 `XUEQIU_OPENCLI_*` 覆盖。
+
+**验证**：✅ pytest 280 passed；实测 8 次预定间隔 10.0/11.5/6.5/9.9/10.7/7.1/10.4 秒
+
+### v4.3.1 (2026-10-05) — 限速修复：人工验证检测 + browser open 漏限速
+
+**Commit**：`0dbc58f` / `cc05f39` / `73c91b1`
+
+**修复**：
+- 🐛 `0dbc58f` 人工验证页漏检：`waf.CONTENT_PATTERNS` 补「访问触发保护」「完成人机验证」，命中 check.xueqiu.com/captcha 实测文案
+- 🐛 `cc05f39` 限速范围收紧：`acquire_opencli_slot` 新增 `_should_throttle(args)`，只限速会发起雪球请求的命令（xueqiu 非 help / browser open），get/extract/close 本地交互不限速
+- 🐛 `73c91b1` browser open 从未被限速：判定下标 `values[3]` → `values[2]`（values[3] 是 URL，永远不等于 "open"）；此前限速只覆盖约 13% 流量（130 次里仅 user-articles 的 17 次被限速），漏掉的恰是最重的页面导航
+
+**验证**：✅ pytest 278 passed；真实 argv 复验 browser open → 限速=True
+
+### v4.3.0 (2026-10-04) — opencli 调用台账 + 随机限速
+
+**Commit**：`be414d8` / `d92ffff`
+
+**新增**：
+- ✨ `opencli_call_logger.py`（139 行）：每次 opencli 调用追加一条 JSONL 台账（命令/开始时间/结果/错误/调用方），`record_opencli_call` 支持 `throttle` 字段记录等待与预留时长
+- ✨ `opencli_rate_limiter.py`（151 行）：跨进程随机限速器，状态文件（`~/.opencli/xueqiu-throttle.json` + `.lock`）调度命令**起始时间**，锁只在预留时持有、sleep 在释放后进行，避免长命令阻塞无关爬取
+- 🔧 `fetcher_opencli._run` 接入两模块：先 `acquire_opencli_slot` 再执行，`record_opencli_call` 带上 throttle 数据
+
+**验证**：✅ pytest 新增 5 个测试（限速 3 + 台账 2），全量通过
 
 ### v4.2.5 (2026-10-02) — 停止跟踪 .deepseek/ 运行期状态
 
