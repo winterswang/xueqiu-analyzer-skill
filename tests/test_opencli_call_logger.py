@@ -19,6 +19,7 @@ def test_opencli_call_logger_records_safe_fields(tmp_path, monkeypatch):
         started_at=0,
         result=result,
         caller="unit",
+        throttle={"waited_seconds": 0.5, "reserved_seconds": 2.0},
     )
     record = json.loads(log_path.read_text(encoding="utf-8"))
 
@@ -28,6 +29,8 @@ def test_opencli_call_logger_records_safe_fields(tmp_path, monkeypatch):
     assert record["ok"] is True
     assert record["stdout_bytes"] == len(result.stdout)
     assert "stdout" not in record
+    assert record["throttle_wait_ms"] == 500.0
+    assert record["throttle_reserved_ms"] == 2000.0
 
 
 def test_fetcher_run_writes_one_jsonl_record(tmp_path, monkeypatch):

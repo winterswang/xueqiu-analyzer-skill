@@ -84,6 +84,7 @@ def record_opencli_call(
     error: BaseException | None = None,
     source: str | None = None,
     caller: str | None = None,
+    throttle: dict[str, Any] | None = None,
 ) -> None:
     """Append one completed opencli invocation as a single JSON line."""
     path = log_path()
@@ -117,6 +118,13 @@ def record_opencli_call(
         "pid": os.getpid(),
         "ppid": os.getppid(),
     }
+    if throttle:
+        record["throttle_wait_ms"] = round(
+            float(throttle.get("waited_seconds", 0)) * 1000, 2
+        )
+        record["throttle_reserved_ms"] = round(
+            float(throttle.get("reserved_seconds", 0)) * 1000, 2
+        )
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
-> 最后更新：2026-10-01  
+> 最后更新：2026-10-02  
 > 版本：V4.2  
-> 最近一次 `LAST_ANALYZED`：`13b8b31`
-> 分析范围：全部历史 commit（140 个）
+> 最近一次 `LAST_ANALYZED`：`2c87ed4`
+> 分析范围：全部历史 commit（142 个）
 
-<!-- @@LAST_ANALYZED: 13b8b31 @@-->
+<!-- @@LAST_ANALYZED: 2c87ed4 @@-->
 
 ---
 
@@ -120,7 +120,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | PyYAML | 配置文件 |
 | Click | CLI 框架 |
 | urllib | HTTP 请求 |
-| pytest | 单元测试（253 个） |
+| pytest | 单元测试（268 个） |
 | GitHub Actions | CI：push/PR/manual 触发 pytest |
 
 ---
@@ -292,6 +292,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-017 | crawler_nodriver.py 误归档 → monitor 静默回退 playwright | 归档判定仅 grep 本仓库，未发现 xueqiu-monitor 的跨仓库引用；monitor 的 import 被 try/except 包住，失败不报错 | ✅ 已修复 | `843f9a1` | 文件移回 `src/xueqiu_analyzer/`、删除 archive/ 目录；nodriver 能过 WAF 滑动验证而 playwright 不能，回退即丢数据 |
 | B-018 | 风控页被误判为「无数据」导致静默数据丢失（隐患） | 风控页判定散落 3 仓库 8 处，关键词漂移；405 正文子串误判、大小写不一致、风控与登录态混用 | ✅ 已修复 | `da91358` | 收为唯一实现 waf.py，三问题显式分离，39 条回归测试 |
 | B-019 | 「405 Forbidden」错误页漏检（标题正常、正文含 405 形态） | da91358 把 405 从正文匹配整个去掉，导致「标题正常、正文写着 405 Forbidden」的错误页漏判为正常文章 | ✅ 已修复 | `a9b42ab` | 并入 PR #54 收紧：裸「405」不做子串匹配，但认「405 forbidden / http 405 / 405 not allowed」三种形态，兼顾两边 |
+| B-020 | extractor 缺 key 时静默 401，日志语焉不详 | `DEEPSEEK_API_KEY` 在导入时读成模块常量；key 为空仍发 `Authorization: Bearer ` 空请求换 401；`python-dotenv` 缺失被 `except ImportError: pass` 静默吞掉 | ✅ 已修复 | `2e04064` | 新增 `MissingCredentialError` + `_deepseek_api_key()` 调用时读取，缺失抛带修复指引的错误；dotenv 缺失改 `logger.warning` |
 
 ---
 
@@ -313,6 +314,8 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TD-013 | 跨仓库引用不可见 | 归档判定仅 grep 单仓库，未覆盖外部 consumer（xueqiu-monitor），导致误归档 | P2 | 🟡 部分解决 | 归档决策流程需纳入跨仓库引用检测 |
 | TD-014 | 语义遗留 | `_check_login_status` 遇风控页返回 False，调用方走登录流程而非退避等待（作者注释标注的既有行为） | P2 | 🔴 未解决 | 稳定性 |
 | TD-015 | 模式表漂移 | `crawler_nodriver._detect_waf` 仍用本地 `_WAF_CONTENT_PATTERNS=("aliyun_waf","_waf_","renderData")`，与 `waf.PAGE_MARKERS=("aliyun_waf",)` 已漂移；`has_waf_marker` 已抽出但尚未接线 | P1 | 🔴 未解决 | 稳定性 |
+| TD-016 | 配置读取两套机制 | `extractor.py` 直读 `os.environ['DEEPSEEK_API_KEY']` + 硬编码项目根 `.env` 路径并自行 `load_dotenv`，与 `config.py` 的 `_resolve_env`（支持 `${VAR}` 插值 + ARK/BAILIAN/DASHSCOPE/openclaw 回退链）是两套不互通的机制 | P2 | 🔴 未解决 | 配置一致性 |
+| TD-017 | 敏感信息残留历史 | `.deepseek/state/subagents.v1.json` 含完整 agent 运行记录（prompt/result/绝对路径），`git rm --cached` 只停止跟踪工作树、不清理 git 历史；若仓库公开需 `git filter-repo` 重写历史 | P2 | 🔴 未解决 | 隐私/安全 |
 
 ---
 
@@ -364,6 +367,36 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 ---
 
 ## 🔄 版本记录
+
+### v4.2.5 (2026-10-02) — 停止跟踪 .deepseek/ 运行期状态
+
+**Commit**：`2c87ed4`
+
+**变更**：
+- 🔨 `.gitignore` 新增忽略 `.deepseek/`（DeepSeek TUI 自动生成的运行期状态）
+- 🔨 `git rm --cached` 停止跟踪两个运行期状态文件（磁盘文件保留）：
+  - `.deepseek/instructions.md`（61 行）—— 自动生成的目录树，文件头写明「可随时删除」
+  - `.deepseek/state/subagents.v1.json`（52 行）—— 过去 agent 运行记录，含完整 prompt / result / evidence 与绝对路径
+
+**动机**：这类运行期状态不该进版本库（同理于 `__pycache__`、`.pytest_cache`），五月起已停止更新，属历史残留。含完整 prompt 与绝对路径的 agent 运行记录进版本库有隐私/安全暴露风险。
+
+**影响**：仓库不再跟踪 `.deepseek/` 运行期状态，无代码行为变更。
+
+### v4.2.4 (2026-10-01) — extractor 缺 key 时报可操作错误
+
+**Commit**：`2e04064`
+
+**修复**：
+- 🐛 `extractor.py` 在 `DEEPSEEK_API_KEY` 缺失时静默发出 `Authorization: Bearer ` 空请求，换回语焉不详的 `HTTP Error 401` —— 排查方向被带偏到网络/额度，而非配置
+- 🐛 `python-dotenv` 未安装时 `except ImportError: pass` 静默吞掉，`.env` 从未被加载、key 恒为空 —— 正是 2026-06-08 的事故（见 DAILY_LOG.md）→ 改为 `logger.warning` 显式提示
+
+**变更**：
+- ✨ 新增 `MissingCredentialError(RuntimeError)`：凭证未配置与「API 调用失败」显式区分
+- 🔧 新增 `_deepseek_api_key()`：调用时读取，不再导入时缓存成模块常量（规避 import 顺序与 `.env` 加载先后导致的「环境变量设了却读到空」），缺失则抛带修复指引的错误（读顺序 / 修复方法 / python-dotenv 检查）
+- 🔧 `call_deepseek_extract` 在 try 块之外提前校验凭证，缺失时不再发任何请求
+- 🧪 `test_extractor.py` 新增 autouse fixture 显式提供凭证 + 2 个回归测试（缺失抛可操作错误、缺失不触网）
+
+**验证**：✅ pytest 268 passed
 
 ### v4.2.3 (2026-10-01) — 添加 GitHub Actions CI
 
