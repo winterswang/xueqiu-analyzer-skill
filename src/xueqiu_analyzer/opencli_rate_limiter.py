@@ -51,9 +51,14 @@ def _should_throttle(args: list[str] | None) -> bool:
     if values[0] == "xueqiu":
         return "--help" not in values and "-h" not in values
     if values[0] == "browser":
-        # Browser open navigates to the target site. extract/close talk to the
-        # already-open local tab and do not create a new Xueqiu request.
-        return len(values) >= 4 and values[3] == "open"
+        # 形态是 ["browser", <session>, <子命令>, ...]：
+        #   browser open  → 导航到目标站点，**会发起雪球请求**，必须限速
+        #   browser get/extract/close → 只跟已打开的本地标签页交互，不发请求
+        # 2026-10-05 修：这里原写成 values[3]，而 values[3] 是 URL —— 拿 URL 和
+        # "open" 比永远不成立，于是 browser open 从来没被限速过。当天实测：
+        # 台账 130 次调用里 37 次是 browser:open，而限速器只记了 17 次
+        # （只有 user-articles 被限速），限速覆盖约 13% 的流量。
+        return len(values) >= 3 and values[2] == "open"
     return False
 
 
