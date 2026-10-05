@@ -42,3 +42,19 @@ def test_limiter_reserves_cross_process_slots(tmp_path, monkeypatch):
     assert abs(sleeps[0] - second["waited_seconds"]) < 0.01
     assert saved["calls"] == 2
     assert saved["last_source"] == "second"
+
+
+def test_local_browser_extract_and_help_do_not_wait(tmp_path, monkeypatch):
+    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "on")
+    monkeypatch.setattr(limiter.time, "sleep", lambda _seconds: None)
+
+    extract = limiter.acquire_opencli_slot(
+        "extract",
+        ["opencli", "browser", "detailfetch0", "extract", "--selector", "article"],
+    )
+    help_slot = limiter.acquire_opencli_slot(
+        "help", ["opencli", "xueqiu", "user-articles", "--help"]
+    )
+
+    assert extract["enabled"] is False
+    assert help_slot["enabled"] is False

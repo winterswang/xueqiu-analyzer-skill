@@ -122,7 +122,7 @@ def _run(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """Run an opencli command."""
     cmd = ["opencli"] + list(args)
     logger.debug(f"opencli: {' '.join(cmd)}")
-    slot = acquire_opencli_slot(" ".join(args[:2]))
+    slot = acquire_opencli_slot(" ".join(args[:2]), cmd)
     started_at = time.time()
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
