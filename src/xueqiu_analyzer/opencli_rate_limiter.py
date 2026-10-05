@@ -39,6 +39,24 @@ def throttle_enabled() -> bool:
     return not bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
+def _should_throttle(args: list[str] | None) -> bool:
+    """Only throttle commands that can initiate a Xueqiu site request."""
+    if not args:
+        return True
+    values = [str(value) for value in args]
+    if values and values[0] == "opencli":
+        values = values[1:]
+    if not values:
+        return False
+    if values[0] == "xueqiu":
+        return "--help" not in values and "-h" not in values
+    if values[0] == "browser":
+        # Browser open navigates to the target site. extract/close talk to the
+        # already-open local tab and do not create a new Xueqiu request.
+        return len(values) >= 4 and values[3] == "open"
+    return False
+
+
 def _read_state(path: Path) -> dict[str, Any]:
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -59,14 +77,16 @@ def _write_state(path: Path, state: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def acquire_opencli_slot(source: str = "") -> dict[str, Any]:
+def acquire_opencli_slot(
+    source: str = "", args: list[str] | None = None
+) -> dict[str, Any]:
     """Reserve the next Xueqiu command slot and sleep until it starts.
 
     The state file schedules command *start times* across processes. Locking is
     only held while reserving a slot; sleeping happens after release so one
     long browser command does not block unrelated crawls.
     """
-    if not throttle_enabled():
+    if not throttle_enabled() or not _should_throttle(args):
         return {"enabled": False, "waited_seconds": 0.0, "reserved_seconds": 0.0}
 
     state_path = Path(os.path.expanduser(
