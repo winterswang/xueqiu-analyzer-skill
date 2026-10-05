@@ -98,3 +98,43 @@ def test_should_throttle_covers_site_requests_only():
     assert limiter._should_throttle(
         ["opencli", "xueqiu", "user-articles", "--help"]
     ) is False
+
+
+# ── 默认策略 ──────────────────────────────────────────────────────────────
+
+
+def test_default_interval_policy_is_pinned():
+    """默认间隔是**策略决定**，不是实现细节。
+
+    2026-10-05 由 12–24 秒收到 6–12 秒：证据显示被风控拦截那次是当天**第一次**
+    调用（此前 14 小时调用数为 0），即拦截并非即时频率所致，把爬取拖慢一倍
+    收益存疑。6–12 秒（均值 9 秒）的单进程峰值上限约 6.7 次/分，仍低于修复
+    browser open 限速之前实测的 10 次/分。
+
+    要再调这两个值 = 改策略，连同这条测试一起改即可。
+    """
+    assert limiter.DEFAULT_MIN_DELAY_SECONDS == 6.0
+    assert limiter.DEFAULT_MAX_DELAY_SECONDS == 12.0
+    assert 0 < limiter.DEFAULT_MIN_DELAY_SECONDS < limiter.DEFAULT_MAX_DELAY_SECONDS
+    # 长停是"打断匀速机器形态"的机制，不能被关掉
+    assert limiter.DEFAULT_LONG_PAUSE_EVERY > 0
+    assert 0 < limiter.DEFAULT_LONG_PAUSE_MIN_SECONDS < limiter.DEFAULT_LONG_PAUSE_MAX_SECONDS
+
+
+def test_default_band_used_when_env_absent(tmp_path, monkeypatch):
+    """不设环境变量时，预定的间隔必须落在默认 band 内。"""
+    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "on")
+    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE_STATE", str(tmp_path / "t.json"))
+    for name in ("XUEQIU_OPENCLI_MIN_DELAY_SECONDS", "XUEQIU_OPENCLI_MAX_DELAY_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(limiter.time, "sleep", lambda _seconds: None)
+
+    slot = limiter.acquire_opencli_slot("test")
+
+    assert slot["enabled"] is True
+    # 第一次调用不会触发长停，所以 reserved == 间隔本身
+    assert (
+        limiter.DEFAULT_MIN_DELAY_SECONDS
+        <= slot["reserved_seconds"]
+        <= limiter.DEFAULT_MAX_DELAY_SECONDS
+    )
