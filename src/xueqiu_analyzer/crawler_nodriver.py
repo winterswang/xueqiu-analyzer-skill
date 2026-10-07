@@ -32,13 +32,13 @@ except ImportError:  # pragma: no cover
     uc = None
 
 from .models import CrawlResult, Discussion, News, Notice, Article
+from .waf import has_waf_marker
 
 logger = logging.getLogger(__name__)
 
 
-# ── WAF 检测（与 crawler-nodriver 共享模式）──
+# ── WAF 检测（正文标记复用 waf.PAGE_MARKERS 唯一实现）──
 _WAF_TITLE_PATTERNS = ("滑动验证", "405", "403")
-_WAF_CONTENT_PATTERNS = ("aliyun_waf", "_waf_", "renderData")
 
 
 class WafDetectedError(Exception):
@@ -326,10 +326,9 @@ class XueqiuNodriverCrawler:
             )
         except Exception:
             content = ""
-        for pat in _WAF_CONTENT_PATTERNS:
-            if pat in (content or ""):
-                logger.warning(f"检测到 WAF 标记 ({pat})")
-                return True
+        if has_waf_marker(content or ""):
+            logger.warning("检测到 WAF 标记 (waf.PAGE_MARKERS)")
+            return True
         return False
 
     async def _wait_for_selector(self, selector: str, timeout_s: float = 8.0) -> bool:

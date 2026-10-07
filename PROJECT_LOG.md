@@ -263,7 +263,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | F-017 | 单元测试 | ✅ 完成 | V3 | 51 个测试：quality/evaluator/config/模型序列化 |
 | F-018 | opencli 调用台账 | ✅ 完成 | V4.3 | 每次 opencli 调用追加 JSONL 日志（含 throttle 等待/预留时长），支持峰值复盘 |
 | F-019 | opencli 随机限速 | ✅ 完成 | V4.3 | 跨进程随机限速：状态文件调度命令起始时间，默认间隔 6–12 秒 + 每 30 次 45–75 秒长停 |
-| F-020 | 台账「预期未命中」标记 | ✅ 完成 | V4.3 | record_opencli_call 支持 expect_miss，把探针序列与真失败分开，避免假警报淹掉真失败 |
+| F-020 | 台账「预期未命中」标记 | ✅ 完成 | V4.3 | record_opencli_call 支持 expect_miss，把探针序列与真失败分开，避免假警报淹掉真失败；调用方已接线（monitor 34c7fac） |
 
 ### 版本演进
 
@@ -309,7 +309,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-020 | extractor 缺 key 时静默 401，日志语焉不详 | `DEEPSEEK_API_KEY` 在导入时读成模块常量；key 为空仍发 `Authorization: Bearer ` 空请求换 401；`python-dotenv` 缺失被 `except ImportError: pass` 静默吞掉 | ✅ 已修复 | `2e04064` | 新增 `MissingCredentialError` + `_deepseek_api_key()` 调用时读取，缺失抛带修复指引的错误；dotenv 缺失改 `logger.warning` |
 | B-021 | 人工验证页漏检（check.xueqiu.com/captcha） | waf 模式表缺「访问触发保护 / 完成人机验证」两条文案，实测验证页未命中旧模式 | ✅ 已修复 | `0dbc58f` | CONTENT_PATTERNS 补 2 条 + 回归测试 |
 | B-022 | browser open 从未被限速（限速覆盖仅 ~13%） | `_should_throttle` 对 browser 判定写成 `values[3] == "open"`，而 values[3] 是 URL，永不成立 → 最重的页面导航漏限速 | ✅ 已修复 | `73c91b1` | 下标 values[3]→values[2]；新增 2 条测试枚举各命令判定 |
-| B-023 | 探针未命中被误报为失败（browser:extract 假警报「75% 失败」） | detail_fetcher 按精确度顺序试 8 个正文选择器，未命中 rc=2 是正常探测，台账却把每条 rc=2 当失败统计——两次抓取都成功却被报成多数失败 | 🟡 部分修复 | `48ab818` | logger 侧能力就绪（expect_miss 标记），但调用方未接线，见 TD-018 / TODO-009 |
+| B-023 | 探针未命中被误报为失败（browser:extract 假警报「75% 失败」） | detail_fetcher 按精确度顺序试 8 个正文选择器，未命中 rc=2 是正常探测，台账却把每条 rc=2 当失败统计——两次抓取都成功却被报成多数失败 | ✅ 已修复 | `48ab818` + monitor `34c7fac` | logger 侧 expect_miss 标记 + monitor 调用方接线（open/extract/close 区分标记），假警报消除 |
 
 ---
 
@@ -330,10 +330,10 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TD-012 | 静默吞异常 | `_load_openclaw_provider` 无日志 | P2 | ✅ 已解决 | 1f8ca71 |
 | TD-013 | 跨仓库引用不可见 | 归档判定仅 grep 单仓库，未覆盖外部 consumer（xueqiu-monitor），导致误归档 | P2 | 🟡 部分解决 | 归档决策流程需纳入跨仓库引用检测 |
 | TD-014 | 语义遗留 | `_check_login_status` 遇风控页返回 False，调用方走登录流程而非退避等待（作者注释标注的既有行为） | P2 | 🔴 未解决 | 稳定性 |
-| TD-015 | 模式表漂移 | `crawler_nodriver._detect_waf` 仍用本地 `_WAF_CONTENT_PATTERNS=("aliyun_waf","_waf_","renderData")`，与 `waf.PAGE_MARKERS=("aliyun_waf",)` 已漂移；`has_waf_marker` 已抽出但尚未接线 | P1 | 🔴 未解决 | 稳定性 |
+| TD-015 | 模式表漂移 | `crawler_nodriver._detect_waf` 仍用本地 `_WAF_CONTENT_PATTERNS=("aliyun_waf","_waf_","renderData")`，与 `waf.PAGE_MARKERS=("aliyun_waf",)` 已漂移；`has_waf_marker` 已抽出但尚未接线 | P1 | ✅ 已解决 | 稳定性 |
 | TD-016 | 配置读取两套机制 | `extractor.py` 直读 `os.environ['DEEPSEEK_API_KEY']` + 硬编码项目根 `.env` 路径并自行 `load_dotenv`，与 `config.py` 的 `_resolve_env`（支持 `${VAR}` 插值 + ARK/BAILIAN/DASHSCOPE/openclaw 回退链）是两套不互通的机制 | P2 | 🔴 未解决 | 配置一致性 |
 | TD-017 | 敏感信息残留历史 | `.deepseek/state/subagents.v1.json` 含完整 agent 运行记录（prompt/result/绝对路径），`git rm --cached` 只停止跟踪工作树、不清理 git 历史；若仓库公开需 `git filter-repo` 重写历史 | P2 | 🔴 未解决 | 隐私/安全 |
-| TD-018 | expect_miss 未接线 | `record_opencli_call` 的 `expect_miss` 参数与 2 个测试已就绪，但生产调用方（`detail_fetcher.fetch_page_opencli` 探针序列）未传 `expect_miss=True`，台账假警报能力到位但尚未生效 | P1 | 🔴 未解决 | 可观测性 |
+| TD-018 | expect_miss 未接线 | `record_opencli_call` 的 `expect_miss` 参数与 2 个测试已就绪，但生产调用方（`detail_fetcher.fetch_page_opencli` 探针序列）未传 `expect_miss=True`，台账假警报能力到位但尚未生效 | P1 | ✅ 已解决（monitor `34c7fac`） | 可观测性 |
 
 ---
 
@@ -348,8 +348,6 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TODO-005 | 增加 orchestrator 流程测试 | P1 | 测试覆盖缺口 |
 | TODO-006 | 增加 financial_fetcher fallback 测试 | P1 | 测试覆盖缺口 |
 | TODO-007 | 检查 `_refresh_cookies()` 中 `subprocess.check_output` 路径硬编码 | P2 | 稳定性 |
-| TODO-008 | `crawler_nodriver._detect_waf` 改用 `waf.has_waf_marker`，删除本地漂移模式表 `_WAF_CONTENT_PATTERNS` | P1 | TD-015 |
-| TODO-009 | `detail_fetcher.fetch_page_opencli` 探针序列接线 `expect_miss=True` | P1 | TD-018 |
 
 ---
 
