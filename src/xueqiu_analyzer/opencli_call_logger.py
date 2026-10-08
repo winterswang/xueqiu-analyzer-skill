@@ -30,6 +30,11 @@ def _operation(args: list[str]) -> str:
         args = args[1:]
     if args[0] == "xueqiu":
         return args[1] if len(args) > 1 else "xueqiu"
+    if args[0] == "web" and len(args) > 1:
+        # 通用网页正文命令（opencli-adapters/article.js）。与 `xueqiu <子命令>`
+        # 同构：取**子命令名**而不是站点名。否则台账里只剩 "web"，站点口径
+        # （analyze_opencli_usage.SITE_OPERATIONS）按 operation 分类时对不上。
+        return args[1]
     if args[0] == "browser" and len(args) >= 3:
         return f"browser:{args[2]}"
     return args[0]
@@ -45,6 +50,9 @@ def _target(args: list[str]) -> str:
         if len(args) >= 4 and args[2] == "open":
             return args[3]
         return args[1] if len(args) > 1 else ""
+    if args[0] == "web":
+        # web article <url> —— 记 URL。撞风控时要能看出是哪一篇被拦。
+        return args[2] if len(args) >= 3 and args[1] == "article" else ""
     if args[0] != "xueqiu" or len(args) < 2:
         return ""
 
