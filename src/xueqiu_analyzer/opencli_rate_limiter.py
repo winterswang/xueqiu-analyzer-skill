@@ -53,7 +53,11 @@ def throttle_enabled() -> bool:
 
 
 def _should_throttle(args: list[str] | None) -> bool:
-    """Only throttle commands that can initiate a Xueqiu site request."""
+    """Only throttle commands that navigate to a real page (a site request).
+
+    雪球请求是主要保护对象，但 `web article` 能指向任意域名（cninfo/hkexnews 等），
+    所以判定按「是否真的发出导航」而不是按站点名。
+    """
     if not args:
         return True
     values = [str(value) for value in args]
@@ -72,6 +76,17 @@ def _should_throttle(args: list[str] | None) -> bool:
         # 台账 130 次调用里 37 次是 browser:open，而限速器只记了 17 次
         # （只有 user-articles 被限速），限速覆盖约 13% 的流量。
         return len(values) >= 3 and values[2] == "open"
+    if values[0] == "web":
+        # 通用网页正文命令（opencli-adapters/article.js，承接原 browser
+        # open/get/extract 三连）：func 里自己 page.goto 导航真实页面，与
+        # browser open 同类，**必须限速**。之前它不在名单里，切过去就等于把
+        # 正文抓取的限速整个拿掉 —— 比 10-05 那次漏掉 browser open 还严重。
+        # 按**动词**匹配而不是整个站点，理由同上面的 browser 分支：将来 web 下
+        # 出现不发请求的子命令时不该被一起限速（症状只是"变慢"，很难查）。
+        # --help 是本地探测（is_article_available 用），不发请求，不限。
+        if "--help" in values or "-h" in values:
+            return False
+        return len(values) >= 2 and values[1] == "article"
     return False
 
 

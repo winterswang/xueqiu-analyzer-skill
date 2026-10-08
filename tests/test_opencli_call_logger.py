@@ -93,3 +93,26 @@ def test_expect_miss_absent_by_default(tmp_path, monkeypatch):
     record = json.loads(log_path.read_text(encoding="utf-8"))
 
     assert "expect_miss" not in record
+
+
+def test_web_article_logs_command_name_as_operation(tmp_path, monkeypatch):
+    """`web article` 的 operation 必须是**子命令名**（article），不是站点名（web）.
+
+    回归（2026-10-08 实测）：首版只取了 args[0]，台账里全记成 "web"，而
+    analyze_opencli_usage 的站点口径是按 operation 分类的 —— 于是这条主通道的
+    站点请求全都不计入峰值，限速/风控监控会漏算。
+    """
+    log_path = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("XUEQIU_OPENCLI_LOG", str(log_path))
+    result = SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    record_opencli_call(
+        ["opencli", "web", "article", "https://xueqiu.com/1/2", "-f", "json"],
+        started_at=0,
+        result=result,
+        caller="unit",
+    )
+    record = json.loads(log_path.read_text(encoding="utf-8"))
+
+    assert record["operation"] == "article"
+    assert record["target"] == "https://xueqiu.com/1/2"

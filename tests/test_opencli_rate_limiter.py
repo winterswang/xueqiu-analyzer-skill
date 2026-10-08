@@ -91,6 +91,11 @@ def test_should_throttle_covers_site_requests_only():
     assert limiter._should_throttle(
         ["opencli", "xueqiu", "user-articles", "--user_id", "1", "-f", "json"]
     ) is True
+    # 通用网页正文命令：内部 page.goto 导航真实页面（可指向雪球，也可指向
+    # cninfo/hkexnews），与 browser open 同类
+    assert limiter._should_throttle(
+        ["opencli", "web", "article", "https://xueqiu.com/1/2", "-f", "json"]
+    ) is True
     # 本地操作：不发站点请求
     assert limiter._should_throttle(["opencli", "browser", "s0", "extract"]) is False
     assert limiter._should_throttle(["opencli", "browser", "s0", "get", "title"]) is False
@@ -98,6 +103,7 @@ def test_should_throttle_covers_site_requests_only():
     assert limiter._should_throttle(
         ["opencli", "xueqiu", "user-articles", "--help"]
     ) is False
+    assert limiter._should_throttle(["opencli", "web", "article", "--help"]) is False
 
 
 # ── 默认策略 ──────────────────────────────────────────────────────────────
