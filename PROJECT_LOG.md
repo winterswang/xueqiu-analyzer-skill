@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
-> 最后更新：2026-10-05  
+> 最后更新：2026-10-08  
 > 版本：V4.3  
-> 最近一次 `LAST_ANALYZED`：`48ab818`
-> 分析范围：全部历史 commit（149 个）
+> 最近一次 `LAST_ANALYZED`：`8a98af3`
+> 分析范围：全部历史 commit（152 个）
 
-<!-- @@LAST_ANALYZED: 48ab818 @@-->
+<!-- @@LAST_ANALYZED: 8a98af3 @@-->
 ---
 
 ## 🏗️ 系统架构
@@ -310,6 +310,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-021 | 人工验证页漏检（check.xueqiu.com/captcha） | waf 模式表缺「访问触发保护 / 完成人机验证」两条文案，实测验证页未命中旧模式 | ✅ 已修复 | `0dbc58f` | CONTENT_PATTERNS 补 2 条 + 回归测试 |
 | B-022 | browser open 从未被限速（限速覆盖仅 ~13%） | `_should_throttle` 对 browser 判定写成 `values[3] == "open"`，而 values[3] 是 URL，永不成立 → 最重的页面导航漏限速 | ✅ 已修复 | `73c91b1` | 下标 values[3]→values[2]；新增 2 条测试枚举各命令判定 |
 | B-023 | 探针未命中被误报为失败（browser:extract 假警报「75% 失败」） | detail_fetcher 按精确度顺序试 8 个正文选择器，未命中 rc=2 是正常探测，台账却把每条 rc=2 当失败统计——两次抓取都成功却被报成多数失败 | ✅ 已修复 | `48ab818` + monitor `34c7fac` | logger 侧 expect_miss 标记 + monitor 调用方接线（open/extract/close 区分标记），假警报消除 |
+| B-024 | `web article` 绕过限速 + 台账 operation 记成 "web" | `_should_throttle` 只认 `xueqiu <子命令>` 与 `browser open`，`web` 落到默认 False；而 `web article` 承接原 browser open/get/extract 三连的正文抓取，func 内自己 page.goto 导航真实页面，漏限速=正文抓取限速整个被拿掉（比 B-022 更严重）；`_operation` 对 `web` 未覆盖落到 `return args[0]` 得 "web"，站点口径按 operation 分类时主通道请求全部漏出峰值监控 | ✅ 已修复 | `8a98af3` | 限速器补 `web` 分支按动词匹配 article（--help 本地探测不限）；台账 `_operation` 取子命令名 + `_target` 记 URL；新增 test_web_article_logs_command_name_as_operation 钉住取名 |
 
 ---
 
@@ -330,7 +331,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TD-012 | 静默吞异常 | `_load_openclaw_provider` 无日志 | P2 | ✅ 已解决 | 1f8ca71 |
 | TD-013 | 跨仓库引用不可见 | 归档判定仅 grep 单仓库，未覆盖外部 consumer（xueqiu-monitor），导致误归档 | P2 | 🟡 部分解决 | 归档决策流程需纳入跨仓库引用检测 |
 | TD-014 | 语义遗留 | `_check_login_status` 遇风控页返回 False，调用方走登录流程而非退避等待（作者注释标注的既有行为） | P2 | 🔴 未解决 | 稳定性 |
-| TD-015 | 模式表漂移 | `crawler_nodriver._detect_waf` 仍用本地 `_WAF_CONTENT_PATTERNS=("aliyun_waf","_waf_","renderData")`，与 `waf.PAGE_MARKERS=("aliyun_waf",)` 已漂移；`has_waf_marker` 已抽出但尚未接线 | P1 | ✅ 已解决 | 稳定性 |
+| TD-015 | 模式表漂移 | `crawler_nodriver._detect_waf` 曾用本地 `_WAF_CONTENT_PATTERNS=("aliyun_waf","_waf_","renderData")`，与 `waf.PAGE_MARKERS=("aliyun_waf",)` 漂移；已接线 `waf.has_waf_marker` 并删除本地漂移表 | P1 | ✅ 已解决（`dd2e835`） | 稳定性 |
 | TD-016 | 配置读取两套机制 | `extractor.py` 直读 `os.environ['DEEPSEEK_API_KEY']` + 硬编码项目根 `.env` 路径并自行 `load_dotenv`，与 `config.py` 的 `_resolve_env`（支持 `${VAR}` 插值 + ARK/BAILIAN/DASHSCOPE/openclaw 回退链）是两套不互通的机制 | P2 | 🔴 未解决 | 配置一致性 |
 | TD-017 | 敏感信息残留历史 | `.deepseek/state/subagents.v1.json` 含完整 agent 运行记录（prompt/result/绝对路径），`git rm --cached` 只停止跟踪工作树、不清理 git 历史；若仓库公开需 `git filter-repo` 重写历史 | P2 | 🔴 未解决 | 隐私/安全 |
 | TD-018 | expect_miss 未接线 | `record_opencli_call` 的 `expect_miss` 参数与 2 个测试已就绪，但生产调用方（`detail_fetcher.fetch_page_opencli` 探针序列）未传 `expect_miss=True`，台账假警报能力到位但尚未生效 | P1 | ✅ 已解决（monitor `34c7fac`） | 可观测性 |
@@ -384,6 +385,37 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 ---
 
 ## 🔄 版本记录
+
+### v4.3.5 (2026-10-08) — 限速器与台账口径覆盖 web article
+
+**Commit**：`8a98af3`
+
+**修复**：
+- 🐛 限速器漏拦 `web article`：`_should_throttle` 只认 `xueqiu <子命令>` 与 `browser open`，`web` 落到默认 False —— 而 `web article`（opencli-adapters/article.js）承接了原 browser open/get/extract 三连的正文抓取职责，func 内自己 page.goto 导航真实页面，切过去等于把正文抓取的限速整个拿掉（比 10-05 漏掉 browser open 更严重，那次只覆盖约 13% 流量）
+- 🐛 台账 operation 取名错误：`_operation` 对 `web` 未覆盖，落到 `return args[0]` 得到 "web"，而 `analyze_opencli_usage` 的站点口径按 operation 分类 —— 这条主通道的站点请求全部漏出峰值监控（首轮 smoke 实测 operation="web"）
+
+**变更**：
+- 🔧 `_should_throttle` 补 `web` 分支，按**动词**匹配（article）而非整个站点 —— 理由同 browser 分支：将来 web 下出现不发请求的子命令时不该被一起限速（症状只是"变慢"难查）；`--help`/`-h` 是 is_article_available 本地探测，不发请求，不限
+- 🔧 `_operation` 对 `web` 取子命令名（与 xueqiu 同构）；`_target` 补 URL 提取（撞风控时能看出是哪一篇被拦）；xueqiu / browser 既有分支未动，新分支均做长度守卫
+- 🧪 新增 `test_web_article_logs_command_name_as_operation` 钉住取名；`test_should_throttle_covers_site_requests_only` 补两种形态（web article 限速 / web article --help 不限）
+
+**验证**：
+- ✅ 真实台账核对：operation=article、target=<url>、throttle_reserved_ms=7691（落在 6–12 秒窗口内，确认限速生效）
+- ✅ 288 passed
+
+### v4.3.4 (2026-10-07) — crawler_nodriver 接线 waf.has_waf_marker，删除漂移模式表
+
+**Commit**：`dd2e835`
+
+**修复**：
+- 🐛 `crawler_nodriver._detect_waf` 仍用本地漂移模式表 `_WAF_CONTENT_PATTERNS=("aliyun_waf","_waf_","renderData")`，与 `waf.PAGE_MARKERS=("aliyun_waf",)` 已漂移（v4.2.1 抽出 `has_waf_marker` 后未接线，见 TD-015）
+
+**变更**：
+- 🔧 `_detect_waf` 改为复用 `waf.has_waf_marker`（唯一实现），删除本地 `_WAF_CONTENT_PATTERNS`；标题模式 `_WAF_TITLE_PATTERNS` 保留（滑动验证/405/403 仍是 crawler 侧特有判定）
+- 🧪 新增 `test_crawler_nodriver_waf.py`（5 个参数化用例）：aliyun_waf 命中、renderData/_waf_ 不再命中（旧模式表已删）、正常页不误判、滑动验证标题仍命中
+
+**验证**：
+- ✅ 接线回归测试通过；TD-015 关闭、TODO-008 移除
 
 ### v4.3.3 (2026-10-05) — 台账支持「预期未命中」标记
 
