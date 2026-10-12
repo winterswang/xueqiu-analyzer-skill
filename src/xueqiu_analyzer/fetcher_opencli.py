@@ -118,7 +118,25 @@ def is_available() -> bool:
 # Low-level helpers
 # ════════════════════════════════════════════════════════
 
-def _run(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
+# opencli 子进程的墙钟上限（秒）—— 所有**打站点**的命令都用它。
+#
+# 为什么是 120 而不是 20/30/60（2026-10-12）：插件层限速器
+# （opencli-adapters/rate-limit.js）的等待发生在 **opencli 子进程内部**，会被
+# subprocess.run 的墙钟一并计时。它的策略是「6–12 秒间隔 + 每 30 次一次 45–75 秒长停」，
+# 所以单次可能的最长等待 = 取锁 2s + 长停 75s + 一次真实执行 ≈ 87 秒。
+# 原先各命令用 20/30/60 秒 —— **低于最坏等待**，于是每 30 次必被 KILL 一次。
+# 实测：2026-10-12 13:03 有一笔 `stock-notices` 被 60s 掐死（台账
+# `~/.opencli/xueqiu-calls.jsonl` 里 `timed out after 60 seconds`）。
+# 与 xueqiu-crawler / xueqiu-monitor 两侧取同一个值，改一处要一起改。
+OPENCLI_CALL_TIMEOUT_SECONDS = 120
+
+# 让**子进程**（opencli / 插件）也能认出发起方：插件侧的请求台账靠继承来的
+# XUEQIU_CALL_SOURCE 归因调用方。monitor 在调本模块前已设过（setdefault 不会覆盖它，
+# 于是那些调用仍记在 monitor 名下）；独立使用本包时则记成 analyzer。
+os.environ.setdefault("XUEQIU_CALL_SOURCE", "xueqiu-analyzer:fetcher_opencli")
+
+
+def _run(*args: str, timeout: int = OPENCLI_CALL_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
     """Run an opencli command."""
     cmd = ["opencli"] + list(args)
     logger.debug(f"opencli: {' '.join(cmd)}")
@@ -175,7 +193,7 @@ def fetch_stock_quote(code: str) -> dict:
     """Fetch stock quote via opencli xueqiu stock."""
     symbol = _to_xueqiu_symbol(code)
     try:
-        result = _run("xueqiu", "stock", symbol, "-f", "json", timeout=20)
+        result = _run("xueqiu", "stock", symbol, "-f", "json", timeout=OPENCLI_CALL_TIMEOUT_SECONDS)
         if result.returncode != 0:
             _err = result.stderr or ""
             _quiet = ("EMPTY_RESULT" in _err) or ("no data" in _err)
@@ -201,7 +219,7 @@ def fetch_discussions(code: str, limit: int = 100) -> list[dict]:
     """
     symbol = _to_xueqiu_symbol(code)
     try:
-        result = _run("xueqiu", "comments", symbol, "--limit", str(limit), "-f", "json", timeout=60)
+        result = _run("xueqiu", "comments", symbol, "--limit", str(limit), "-f", "json", timeout=OPENCLI_CALL_TIMEOUT_SECONDS)
         if result.returncode != 0:
             _err = result.stderr or ""
             _quiet = ("EMPTY_RESULT" in _err) or ("no data" in _err)
@@ -226,7 +244,7 @@ def fetch_news_with_status(code: str, limit: int = 30) -> tuple[list[dict], str 
     """
     symbol = _to_xueqiu_symbol(code)
     try:
-        result = _run("xueqiu", "news", symbol, "--limit", str(limit), "-f", "json", timeout=60)
+        result = _run("xueqiu", "news", symbol, "--limit", str(limit), "-f", "json", timeout=OPENCLI_CALL_TIMEOUT_SECONDS)
         if result.returncode != 0:
             _err = result.stderr or ""
             _quiet = ("EMPTY_RESULT" in _err) or ("no data" in _err)
@@ -261,7 +279,7 @@ def fetch_replies(post_url: str, limit: int = 20) -> list[dict]:
     (empty list on failure / no replies).
     """
     try:
-        result = _run("xueqiu", "replies", post_url, "--limit", str(limit), "-f", "json", timeout=90)
+        result = _run("xueqiu", "replies", post_url, "--limit", str(limit), "-f", "json", timeout=OPENCLI_CALL_TIMEOUT_SECONDS)
         if result.returncode != 0:
             _err = result.stderr or ""
             _quiet = ("EMPTY_RESULT" in _err) or ("no data" in _err)
@@ -284,7 +302,7 @@ def fetch_notices(code: str, limit: int = 50) -> list[dict]:
     """
     symbol = _to_xueqiu_symbol(code)
     try:
-        result = _run("xueqiu", "stock-notices", symbol, "--limit", str(limit), "-f", "json", timeout=60)
+        result = _run("xueqiu", "stock-notices", symbol, "--limit", str(limit), "-f", "json", timeout=OPENCLI_CALL_TIMEOUT_SECONDS)
         if result.returncode != 0:
             _err = result.stderr or ""
             _quiet = ("EMPTY_RESULT" in _err) or ("no data" in _err)
