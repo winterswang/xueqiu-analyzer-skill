@@ -124,16 +124,17 @@ def is_available() -> bool:
 # （opencli-adapters/rate-limit.js）的等待发生在 **opencli 子进程内部**，会被
 # subprocess.run 的墙钟一并计时。它的策略是「6–12 秒间隔 + 每 30 次一次 45–75 秒长停」，
 # 所以单次可能的最长等待 = 取锁 2s + 长停 75s + 一次真实执行 ≈ 87 秒。
-# 原先各命令用 20/30/60 秒 —— **低于最坏等待**，于是每 30 次必被 KILL 一次。
+# 原先各命令是 20 / 60 / 60 / 90 / 60 秒 —— **低于最坏等待**，于是每 30 次必被 KILL 一次。
 # 实测：2026-10-12 13:03 有一笔 `stock-notices` 被 60s 掐死（台账
 # `~/.opencli/xueqiu-calls.jsonl` 里 `timed out after 60 seconds`）。
 # 与 xueqiu-crawler / xueqiu-monitor 两侧取同一个值，改一处要一起改。
 OPENCLI_CALL_TIMEOUT_SECONDS = 120
 
-# 让**子进程**（opencli / 插件）也能认出发起方：插件侧的请求台账靠继承来的
-# XUEQIU_CALL_SOURCE 归因调用方。monitor 在调本模块前已设过（setdefault 不会覆盖它，
-# 于是那些调用仍记在 monitor 名下）；独立使用本包时则记成 analyzer。
-os.environ.setdefault("XUEQIU_CALL_SOURCE", "xueqiu-analyzer:fetcher_opencli")
+# 本模块发起调用时使用的调用方标签。**不在 import 期改 os.environ** ——
+# 那是进程级全局副作用，且归因结果依赖 import 顺序（谁先 import 本模块，同一进程里
+# 别的组件的调用就会被误记成 analyzer，review 指出）。改为在 _run 里现算：
+# 环境变量已设（如 monitor 的 XUEQIU_CALL_SOURCE）就用它，否则用本标签。
+DEFAULT_CALL_SOURCE = "xueqiu-analyzer:fetcher_opencli"
 
 
 def _run(*args: str, timeout: int = OPENCLI_CALL_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
@@ -142,15 +143,22 @@ def _run(*args: str, timeout: int = OPENCLI_CALL_TIMEOUT_SECONDS) -> subprocess.
     logger.debug(f"opencli: {' '.join(cmd)}")
     slot = acquire_opencli_slot(" ".join(args[:2]), cmd)
     started_at = time.time()
+    # 调用方身份：环境变量已设就用它（monitor 的 pipeline/report 都设了），否则用本模块标签。
+    # 同一个值**同时**喂给子进程 env（插件侧台账靠继承来的 XUEQIU_CALL_SOURCE 归因）
+    # 和 record_opencli_call（Python 侧台账），这样两份台账的 source 字符串一致。
+    source = os.environ.get("XUEQIU_CALL_SOURCE") or DEFAULT_CALL_SOURCE
+    child_env = None if os.environ.get("XUEQIU_CALL_SOURCE") else {**os.environ, "XUEQIU_CALL_SOURCE": source}
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, env=child_env
+        )
     except Exception as exc:
         record_opencli_call(
-            cmd, started_at, error=exc, caller="_run", throttle=slot
+            cmd, started_at, error=exc, caller="_run", throttle=slot, source=source
         )
         raise
     record_opencli_call(
-        cmd, started_at, result=result, caller="_run", throttle=slot
+        cmd, started_at, result=result, caller="_run", throttle=slot, source=source
     )
     return result
 
