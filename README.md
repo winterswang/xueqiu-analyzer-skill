@@ -80,6 +80,11 @@ playwright install chromium
 pip install -e .
 ```
 
+> ⚠️ **只支持仓库布局（editable 安装）**：`config/config.yaml` 与 `prompts/` 位于**仓库根目录**，
+> 不随 wheel 发布。`pip install .`（非 editable）装出的 `xueqiu` 会拿不到它们 ——
+> 配置静默退回内置默认值、`prompts/content_grader.md` 直接抛 FileNotFoundError。
+> 需要独立安装时请保留仓库目录并用 `-e`（issue #47）。
+
 ### 3.2 配置 API Key
 
 ```bash
