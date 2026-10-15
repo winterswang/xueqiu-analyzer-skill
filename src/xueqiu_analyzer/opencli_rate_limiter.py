@@ -1,4 +1,9 @@
-"""Cross-process, randomized rate limiting for Xueqiu opencli commands."""
+"""Cross-process, randomized rate limiting for Xueqiu opencli commands.
+
+**默认已关闭**（见 :func:`throttle_enabled`）：2026-10-11 起限速由 opencli 插件层
+统一负责（``opencli-adapters/rate-limit.js`` 的 ``onBeforeExecute``
+钩子），它覆盖所有调用方。本模块保留为逃生舱与策略参考。
+"""
 
 from __future__ import annotations
 
@@ -42,14 +47,21 @@ def _env_int(name: str, default: int) -> int:
 
 
 def throttle_enabled() -> bool:
+    """本次进程内限速是否启用。
+
+    2026-10-11：限速能力已上移到 **opencli 插件层**
+    （``opencli-adapters/rate-limit.js``，经 opencli 的
+    ``onBeforeExecute`` 钩子注册）。那一层覆盖**所有**调用方 —— 本包、
+    xueqiu-crawler/monitor 的脚本、FrontierAgent、以及手敲 ``opencli`` ——
+    因此绕不过去。本模块若仍按老默认值生效，就会在每个调用上**再叠一层等待**
+    （双重限速）。
+
+    故默认改为**关闭**，只保留为逃生舱：``XUEQIU_OPENCLI_THROTTLE=1`` 可重新
+    启用（例如某台机器没装插件时）。策略常量与 ``_should_throttle`` 一并保留，
+    供插件侧对照与回退。
+    """
     configured = os.environ.get("XUEQIU_OPENCLI_THROTTLE", "").lower()
-    if configured in {"1", "true", "on", "enabled"}:
-        return True
-    if configured in {"0", "false", "off", "disabled"}:
-        return False
-    # Tests exercise mocked subprocess calls; requiring every unit test to opt
-    # out would make otherwise-instant tests sleep for many minutes.
-    return not bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    return configured in {"1", "true", "on", "enabled"}
 
 
 def _should_throttle(args: list[str] | None) -> bool:
