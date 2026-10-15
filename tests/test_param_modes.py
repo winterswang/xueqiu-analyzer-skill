@@ -37,6 +37,57 @@ class TestTimeWindow:
     def test_invalid_format_returns_false(self):
         assert not _is_beyond_time_window('not a date', 30)
 
+    # ── 跨年：无年份日期必须回退一年（issue #46）────────────────────────
+    # 雪球 DOM 大量出现 'MM-DD' 这种不带年份的时间串。补当年会让「年初看去年
+    # 12 月」变成"未来"，于是旧帖被判进窗口、继续抓。
+
+    @staticmethod
+    def _freeze(monkeypatch, year, month, day, hour=10, minute=0):
+        """把 crawler 模块里的 datetime.now() 钉在指定时刻（不动系统时钟）。"""
+        import sys
+
+        # 按函数自己的 __module__ 取模块 —— 本文件用的是 `src.xueqiu_analyzer.crawler`
+        # 这个导入路径，直接 import xueqiu_analyzer.crawler 会拿到另一个模块对象，
+        # 补丁等于没打（实测三个用例因此假红）。
+        mod = sys.modules[_is_beyond_time_window.__module__]
+
+        class _Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(year, month, day, hour, minute)
+
+        monkeypatch.setattr(mod, 'datetime', _Frozen)
+
+    def test_dateless_last_december_is_beyond(self, monkeypatch):
+        """1 月 5 日看 '12-20' → 上一年 12 月 20 日，远超 7 天窗口。"""
+        self._freeze(monkeypatch, 2026, 1, 5)
+        assert _is_beyond_time_window('12-20', 7)
+
+    def test_dateless_previous_year_end_still_within_window(self, monkeypatch):
+        """1 月 5 日看 '12-31' → 上一年 12 月 31 日只差 5 天，仍在 7 天窗口内。"""
+        self._freeze(monkeypatch, 2026, 1, 5)
+        assert not _is_beyond_time_window('12-31', 7)
+
+    def test_dateless_recent_same_year_is_within(self, monkeypatch):
+        """1 月 5 日看 '01-03' → 当年 1 月 3 日，两天前。"""
+        self._freeze(monkeypatch, 2026, 1, 5)
+        assert not _is_beyond_time_window('01-03', 7)
+
+    def test_dateless_future_by_months_is_last_year(self, monkeypatch):
+        """1 月 5 日看 '06-01' → 不可能是当年 6 月，只能是去年 6 月。"""
+        self._freeze(monkeypatch, 2026, 1, 5)
+        assert _is_beyond_time_window('06-01', 7)
+
+    def test_dateless_clock_skew_not_treated_as_last_year(self, monkeypatch):
+        """当天稍晚的时间（时钟分钟级偏差）不能被当成去年。"""
+        self._freeze(monkeypatch, 2026, 1, 5, hour=10, minute=0)
+        assert not _is_beyond_time_window('01-05 23:50', 7)
+
+    def test_dateless_past_december_in_june_is_beyond(self, monkeypatch):
+        """6 月看 '12-20' → 当年的 12 月 20 日还没到，只能是去年。"""
+        self._freeze(monkeypatch, 2026, 6, 15)
+        assert _is_beyond_time_window('12-20', 7)
+
 
 class TestMaxItemsCountStop:
     """Count-based stopping logic tests."""
