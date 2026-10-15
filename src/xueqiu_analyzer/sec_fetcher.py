@@ -181,6 +181,16 @@ def _clean_sec_text(text: str) -> str:
     return text.strip()
 
 
+def _norm_accession(value) -> str:
+    """accession number 归一化：去掉连字符等分隔符，只留数字/字母。
+
+    雪球公告标题里的 accession（`0001104659-26-067186`）与 edgartools 对象上的
+    字段偶尔格式不同（有无连字符、大小写），归一化后再比，既不会漏掉真匹配，
+    也不会放宽成"差不多就行"。
+    """
+    return re.sub(r'[^0-9A-Za-z]', '', str(value or '')).upper()
+
+
 def fetch_filing_text(
     ticker: str,
     form_type: str,
@@ -221,6 +231,16 @@ def fetch_filing_text(
         logger.warning(f"edgar set_identity 失败: {e}")
         # 非致命 — 部分版本可以不设 identity
 
+    # ── Step 1.5: 把 timeout 真正落到 HTTP 层（issue #45）──
+    # 此前 `timeout` 只存在于签名与文档里，函数体从没读过它，EdgarTools 的
+    # get_all_filings() / text() 不受任何超时约束 —— 网络挂起会一直拖住
+    # crawler 的公告循环。老版本 edgartools 无 configure_http，保持原样。
+    try:
+        if hasattr(_edgar_module, 'configure_http'):
+            _edgar_module.configure_http(timeout=timeout)
+    except Exception as e:
+        logger.debug(f"edgar.configure_http(timeout={timeout}) 失败: {e}")
+
     # ── Step 2: 搜索 filing ──
     try:
         from edgar import Company
@@ -245,23 +265,24 @@ def fetch_filing_text(
         return None
 
     # ── Step 3: 匹配 accession number ──
+    # 精确匹配（两侧都归一化掉连字符等格式差异）。匹配不到就返回 None ——
+    # 绝不能拿 filings[0] 兜底：它只是同表单里最新的一份，不保证是公告指定的
+    # 那份，把它的正文挂到当前公告上等于静默张冠李戴，还会流进报告（issue #44）。
+    want = _norm_accession(accession_number)
     target_filing = None
     for f in filings:
         try:
-            if getattr(f, 'accession_number', '') == accession_number:
+            if _norm_accession(getattr(f, 'accession_number', '')) == want:
                 target_filing = f
                 break
         except Exception:
             continue
 
     if target_filing is None:
-        # 降级：取第一条（edgartools 默认按时间降序）
-        try:
-            target_filing = filings[0]
-        except (IndexError, TypeError):
-            pass
-
-    if target_filing is None:
+        logger.warning(
+            f"SEC 未找到 accession {accession_number}（{ticker} {form_type}）"
+            f" → 不返回正文，保留公告摘要"
+        )
         return None
 
     # ── Step 4: 下载正文 ──
