@@ -58,6 +58,10 @@ def to_finsdk_symbol(symbol: str, market: str = None) -> str:
         m = re.match(r'^(SH|SZ)(\d{6})$', symbol)
         if m:
             return f"{m.group(2)}.{m.group(1)}"
+        # 裸 6 位代码按首位推断交易所（issue #43）：6 开头为沪市，0/3 开头为深市。
+        # 此前一律追加 .SH，000001/300750 这类深市代码会被送去查错市场。
+        if re.match(r'^\d{6}$', symbol) and symbol[0] in '03':
+            return f"{symbol}.SZ"
         return f"{symbol}.SH"
 
     if market == '港股':
