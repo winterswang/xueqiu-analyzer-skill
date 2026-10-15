@@ -1,9 +1,15 @@
-"""Cross-process, randomized rate limiting for Xueqiu opencli commands."""
+"""Cross-process, randomized rate limiting for Xueqiu opencli commands.
+
+**默认已关闭**（见 :func:`throttle_enabled`）：2026-10-11 起限速由 opencli 插件层
+统一负责（``opencli-adapters/rate-limit.js`` 的 ``onBeforeExecute``
+钩子），它覆盖所有调用方。本模块保留为逃生舱与策略参考。
+"""
 
 from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import random
 import time
@@ -41,15 +47,49 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# ⚠️ 曾用名 `XUEQIU_OPENCLI_THROTTLE` 是**插件层的刹车** —— 插件
+# （`opencli-adapters/lib/policy.js` 的 `envFlagOff`）把 0/false/off/no/disabled
+# 当关闭；而本模块把它当油门（1/true/on/enabled 才开）。**同一个变量名，两层极性相反**：
+# 照旧文档设 `=1` 会同时打开两层（正是本模块要避免的双重限速），设 `=0` 则两层都关、
+# 静默失去限速。故逃生舱改用插件层不认识的名字。
+_THROTTLE_ENV = "XUEQIU_PY_THROTTLE"
+_LEGACY_ENV = "XUEQIU_OPENCLI_THROTTLE"
+_ENABLE_VALUES = {"1", "true", "on", "enabled"}
+_warned_legacy_env = False
+
+
 def throttle_enabled() -> bool:
-    configured = os.environ.get("XUEQIU_OPENCLI_THROTTLE", "").lower()
-    if configured in {"1", "true", "on", "enabled"}:
-        return True
-    if configured in {"0", "false", "off", "disabled"}:
-        return False
-    # Tests exercise mocked subprocess calls; requiring every unit test to opt
-    # out would make otherwise-instant tests sleep for many minutes.
-    return not bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    """本次进程内限速是否启用（默认关闭）。
+
+    2026-10-11：限速能力已上移到 **opencli 插件层**
+    （``opencli-adapters/rate-limit.js``，经 opencli 的 ``onBeforeExecute`` 钩子
+    注册）。那一层覆盖**所有经 opencli registry 注册的命令**（``xueqiu/*``、
+    ``web article``、``xiaohongshu/*``），本包与 crawler/monitor 的正常路径都走它。
+    本模块若仍按老默认值生效，就会在每个调用上**再叠一层等待**（双重限速），
+    故默认关闭，只保留为逃生舱。
+
+    ⚠️ 但插件层**覆盖不到 ``opencli browser …`` 子命令**（不经钩子，上游
+    jackwener/opencli#2606）。而 crawler / monitor 的回退路径
+    （``opencli_extractor._attempt_via_browser``、``detail_fetcher._fetch_page_opencli_legacy``）
+    用的正是它 —— 「插件不在位」与「需要本层兜底」是**同一件事**。所以插件缺失 /
+    被停用 / discovery 失败时，必须设 ``XUEQIU_PY_THROTTLE=1``，否则那条回退路径
+    完全不受限速。（2026-10-15 实测该路径当日 0 次调用，故为潜在风险而非现状。）
+
+    策略常量与 ``_should_throttle`` 一并保留，供插件侧对照与回退。
+    """
+    global _warned_legacy_env
+    if not _warned_legacy_env:
+        legacy = os.environ.get(_LEGACY_ENV, "").lower()
+        if legacy in _ENABLE_VALUES:
+            _warned_legacy_env = True
+            # 「大声说」而不是静默不生效：这个变量名是个陷阱（见上方注释）。
+            logging.getLogger(__name__).warning(
+                "%s 是**插件层**的开关，不会启用本 Python 层；要启用本层请设 %s=1"
+                "（若你的本意是关掉插件层，那已经生效了）",
+                _LEGACY_ENV,
+                _THROTTLE_ENV,
+            )
+    return os.environ.get(_THROTTLE_ENV, "").lower() in _ENABLE_VALUES
 
 
 def _should_throttle(args: list[str] | None) -> bool:
@@ -122,15 +162,29 @@ def acquire_opencli_slot(
     if not throttle_enabled() or not _should_throttle(args):
         return {"enabled": False, "waited_seconds": 0.0, "reserved_seconds": 0.0}
 
-    state_path = Path(os.path.expanduser(
-        os.environ.get("XUEQIU_OPENCLI_THROTTLE_STATE", str(DEFAULT_STATE_PATH))
-    ))
+    state_path = Path(
+        os.path.expanduser(
+            os.environ.get("XUEQIU_OPENCLI_THROTTLE_STATE", str(DEFAULT_STATE_PATH))
+        )
+    )
     lock_path = state_path.with_suffix(state_path.suffix + ".lock")
-    min_delay = _env_float("XUEQIU_OPENCLI_MIN_DELAY_SECONDS", DEFAULT_MIN_DELAY_SECONDS)
-    max_delay = max(min_delay, _env_float("XUEQIU_OPENCLI_MAX_DELAY_SECONDS", DEFAULT_MAX_DELAY_SECONDS))
+    min_delay = _env_float(
+        "XUEQIU_OPENCLI_MIN_DELAY_SECONDS", DEFAULT_MIN_DELAY_SECONDS
+    )
+    max_delay = max(
+        min_delay,
+        _env_float("XUEQIU_OPENCLI_MAX_DELAY_SECONDS", DEFAULT_MAX_DELAY_SECONDS),
+    )
     long_every = _env_int("XUEQIU_OPENCLI_LONG_PAUSE_EVERY", DEFAULT_LONG_PAUSE_EVERY)
-    long_min = _env_float("XUEQIU_OPENCLI_LONG_PAUSE_MIN_SECONDS", DEFAULT_LONG_PAUSE_MIN_SECONDS)
-    long_max = max(long_min, _env_float("XUEQIU_OPENCLI_LONG_PAUSE_MAX_SECONDS", DEFAULT_LONG_PAUSE_MAX_SECONDS))
+    long_min = _env_float(
+        "XUEQIU_OPENCLI_LONG_PAUSE_MIN_SECONDS", DEFAULT_LONG_PAUSE_MIN_SECONDS
+    )
+    long_max = max(
+        long_min,
+        _env_float(
+            "XUEQIU_OPENCLI_LONG_PAUSE_MAX_SECONDS", DEFAULT_LONG_PAUSE_MAX_SECONDS
+        ),
+    )
 
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,11 +199,14 @@ def acquire_opencli_slot(
             if long_every and calls % long_every == 0:
                 long_pause = random.uniform(long_min, long_max)
             reserved_seconds = interval + long_pause
-            _write_state(state_path, {
-                "next_at": next_at + reserved_seconds,
-                "calls": calls,
-                "last_source": source,
-            })
+            _write_state(
+                state_path,
+                {
+                    "next_at": next_at + reserved_seconds,
+                    "calls": calls,
+                    "last_source": source,
+                },
+            )
             wait_seconds = max(0.0, next_at - now)
     except OSError:
         # A broken local lock/state file must not turn a data crawl into an

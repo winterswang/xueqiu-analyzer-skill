@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
-> 最后更新：2026-10-08  
-> 版本：V4.3  
-> 最近一次 `LAST_ANALYZED`：`8a98af3`
-> 分析范围：全部历史 commit（152 个）
+> 最后更新：2026-10-12  
+> 版本：V4.3.7  
+> 最近一次 `LAST_ANALYZED`：`687518d`
+> 分析范围：全部历史 commit（155 个）
 
-<!-- @@LAST_ANALYZED: 8a98af3 @@-->
+<!-- @@LAST_ANALYZED: 687518d @@-->
 ---
 
 ## 🏗️ 系统架构
@@ -238,6 +238,16 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 - **锁定机制**：`test_default_interval_policy_is_pinned` 锁住策略值（要调参就得连同测试一起改，杜绝静默漂移）；`test_default_band_used_when_env_absent` 确认无环境变量时预定间隔落在默认 band 内
 - **影响**：默认间隔 12–24 → 6–12 秒（130 次调用预计从 43 分钟缩到 24 分钟）；全部仍可用 `XUEQIU_OPENCLI_*` 环境变量覆盖，无需改代码
 
+### ADR-013：opencli 子进程超时抬到 120s，盖住插件层长停
+
+- **时间**：2026-10-12
+- **Commit**：`85030e6`（`901fb4b` 的 amend，仅重写 message，代码 tree 不变）
+- **背景**：插件层限速器（`opencli-adapters/rate-limit.js`）的等待发生在 **opencli 子进程内部**，会被 `subprocess.run` 的墙钟一并计时；策略「6–12s 间隔 + 每 30 次一次 45–75s 长停」→ 单次最长等待 = 取锁 2s + 长停 75s + 一次真实执行 ≈ 87 秒。本模块各命令超时 20/60/60/90/60 秒低于最坏等待，每 30 次必被 KILL 一次，表现为那一篇/那一只静默降级失败（实测 2026-10-12 13:03 一笔 `stock-notices` 被 60s 掐死）
+- **决策**：抽出统一常量 `OPENCLI_CALL_TIMEOUT_SECONDS = 120`，`_run` 默认值与 5 个 fetch 命令（stock/comments/news/replies/stock-notices）超时全部改用该常量；`os.environ.setdefault("XUEQIU_CALL_SOURCE", "xueqiu-analyzer:fetcher_opencli")` 让子进程继承调用方标识（setdefault 不覆盖 monitor 预置值）
+- **跨仓库一致性**：超时值 120 与 xueqiu-crawler（`opencli_extractor.py`）、xueqiu-monitor（`detail_fetcher.py`）两侧取同一值，三处注释均写「改一处要一起改」；同步目前仅靠注释约定、无漂移检测（与 ADR-011 的 waf 模式表漂移同类风险）
+- **影响**：静默失败与插件侧并发槽泄漏（进程被 KILL → `onAfterExecute` 不触发 → 槽留到 TTL 回收）一并消除
+- **后续修正**：review 指出 `os.environ.setdefault("XUEQIU_CALL_SOURCE", ...)` 是进程级全局副作用（依赖 import 顺序、污染整个 pytest 会话、使 `default_source()` 的 argv 兜底分支永久不可达）。该方案已由 `687518d`（`7a67f3c` 的 squash，PR #42）落地（TD-019 已关闭）
+
 ---
 
 ## 🚀 功能特性
@@ -264,6 +274,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | F-018 | opencli 调用台账 | ✅ 完成 | V4.3 | 每次 opencli 调用追加 JSONL 日志（含 throttle 等待/预留时长），支持峰值复盘 |
 | F-019 | opencli 随机限速 | ✅ 完成 | V4.3 | 跨进程随机限速：状态文件调度命令起始时间，默认间隔 6–12 秒 + 每 30 次 45–75 秒长停 |
 | F-020 | 台账「预期未命中」标记 | ✅ 完成 | V4.3 | record_opencli_call 支持 expect_miss，把探针序列与真失败分开，避免假警报淹掉真失败；调用方已接线（monitor 34c7fac） |
+| F-021 | opencli 调用方归因 | ✅ 完成 | V4.3.7 | `XUEQIU_CALL_SOURCE` 让子进程继承发起方标识：`_run` 现算 source（环境变量已设则用、否则用 `DEFAULT_CALL_SOURCE`）并注入子进程 env，Python 侧与插件侧两份台账 source 一致（独立使用记 analyzer、monitor 调用仍记 monitor）；V4.3.7 起不再在 import 期改 os.environ |
 
 ### 版本演进
 
@@ -311,6 +322,8 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-022 | browser open 从未被限速（限速覆盖仅 ~13%） | `_should_throttle` 对 browser 判定写成 `values[3] == "open"`，而 values[3] 是 URL，永不成立 → 最重的页面导航漏限速 | ✅ 已修复 | `73c91b1` | 下标 values[3]→values[2]；新增 2 条测试枚举各命令判定 |
 | B-023 | 探针未命中被误报为失败（browser:extract 假警报「75% 失败」） | detail_fetcher 按精确度顺序试 8 个正文选择器，未命中 rc=2 是正常探测，台账却把每条 rc=2 当失败统计——两次抓取都成功却被报成多数失败 | ✅ 已修复 | `48ab818` + monitor `34c7fac` | logger 侧 expect_miss 标记 + monitor 调用方接线（open/extract/close 区分标记），假警报消除 |
 | B-024 | `web article` 绕过限速 + 台账 operation 记成 "web" | `_should_throttle` 只认 `xueqiu <子命令>` 与 `browser open`，`web` 落到默认 False；而 `web article` 承接原 browser open/get/extract 三连的正文抓取，func 内自己 page.goto 导航真实页面，漏限速=正文抓取限速整个被拿掉（比 B-022 更严重）；`_operation` 对 `web` 未覆盖落到 `return args[0]` 得 "web"，站点口径按 operation 分类时主通道请求全部漏出峰值监控 | ✅ 已修复 | `8a98af3` | 限速器补 `web` 分支按动词匹配 article（--help 本地探测不限）；台账 `_operation` 取子命令名 + `_target` 记 URL；新增 test_web_article_logs_command_name_as_operation 钉住取名 |
+| B-025 | opencli 调用每 30 次被 KILL 一次（静默降级失败） | 各命令超时 20/60/60/90/60 秒低于插件限速的最坏等待（≈87s = 取锁 2s + 长停 75s + 一次执行），被 `subprocess.run` 墙钟一并计时 | ✅ 已修复 | `85030e6` | 超时统一抬到 120s（`OPENCLI_CALL_TIMEOUT_SECONDS`）；顺带消除插件侧并发槽泄漏（进程被 KILL → onAfterExecute 不触发 → 槽留到 TTL 回收） |
+| B-026 | 调用方归因依赖 import 顺序（误记成 analyzer） | v4.3.6 用 `os.environ.setdefault("XUEQIU_CALL_SOURCE", ...)` 在 import 期改进程级环境变量——谁先 import `fetcher_opencli`，同一进程里别的组件的调用就被误记成 analyzer（review 指出）；import 期改 os.environ 是进程级全局副作用 | ✅ 已修复 | `687518d` | 移除 import 期 setdefault，改为 `_run` 现算 source 并经 `subprocess.run(env=...)` 注入子进程；`record_opencli_call` 同步带 source，两份台账字符串一致 |
 
 ---
 
@@ -335,6 +348,8 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TD-016 | 配置读取两套机制 | `extractor.py` 直读 `os.environ['DEEPSEEK_API_KEY']` + 硬编码项目根 `.env` 路径并自行 `load_dotenv`，与 `config.py` 的 `_resolve_env`（支持 `${VAR}` 插值 + ARK/BAILIAN/DASHSCOPE/openclaw 回退链）是两套不互通的机制 | P2 | 🔴 未解决 | 配置一致性 |
 | TD-017 | 敏感信息残留历史 | `.deepseek/state/subagents.v1.json` 含完整 agent 运行记录（prompt/result/绝对路径），`git rm --cached` 只停止跟踪工作树、不清理 git 历史；若仓库公开需 `git filter-repo` 重写历史 | P2 | 🔴 未解决 | 隐私/安全 |
 | TD-018 | expect_miss 未接线 | `record_opencli_call` 的 `expect_miss` 参数与 2 个测试已就绪，但生产调用方（`detail_fetcher.fetch_page_opencli` 探针序列）未传 `expect_miss=True`，台账假警报能力到位但尚未生效 | P1 | ✅ 已解决（monitor `34c7fac`） | 可观测性 |
+| TD-019 | 调用方标识进程级全局副作用 | `85030e6` 用模块级 `os.environ.setdefault("XUEQIU_CALL_SOURCE", ...)` 注入调用方标识 —— 依赖 import 顺序（谁先 import 本模块，同进程内别的组件调用就被误记成 analyzer），污染整个 pytest 会话，使 `opencli_call_logger.default_source()` 的 argv 兜底分支永久不可达 | P1 | ✅ 已解决（`687518d`） | 归因正确性 |
+| TD-020 | monitor opencli 预取无 per-stock 预算 | 超时抬到 120s 后，monitor 的 opencli 预取（news 60→120、replies 5×90→5×120）窗口被再放大 ~210s/股；`timeout_seconds` 只包住 Playwright 回退，opencli 预取本就无界 | P1 | 🔴 未解决 | 稳定性/超时预算 |
 
 ---
 
@@ -349,6 +364,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TODO-005 | 增加 orchestrator 流程测试 | P1 | 测试覆盖缺口 |
 | TODO-006 | 增加 financial_fetcher fallback 测试 | P1 | 测试覆盖缺口 |
 | TODO-007 | 检查 `_refresh_cookies()` 中 `subprocess.check_output` 路径硬编码 | P2 | 稳定性 |
+| TODO-008 | 给 monitor 的 opencli 预取补 per-stock 预算覆盖 | P1 | TD-020 |
 
 ---
 
@@ -385,6 +401,44 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 ---
 
 ## 🔄 版本记录
+
+### v4.3.7 (2026-10-12) — 调用方标识改为运行时注入子进程 env
+
+**Commit**：`687518d`（`7a67f3c` 的 squash，PR #42，tree 相同）
+
+**修复**：
+- 🐛 v4.3.6 用 `os.environ.setdefault("XUEQIU_CALL_SOURCE", "xueqiu-analyzer:fetcher_opencli")` 在 **import 期**改进程级环境变量——归因结果依赖 import 顺序（谁先 import `fetcher_opencli`，同一进程里别的组件的调用就被误记成 analyzer），且 import 期改 os.environ 是进程级全局副作用（review 指出）
+
+**变更**：
+- 🔧 移除 import 期 `os.environ.setdefault`，改为模块级常量 `DEFAULT_CALL_SOURCE = "xueqiu-analyzer:fetcher_opencli"`
+- 🔧 `_run` 现算 `source = os.environ.get("XUEQIU_CALL_SOURCE") or DEFAULT_CALL_SOURCE`——环境变量已设（monitor 的 pipeline/report 都设了）就用它，否则用本模块标签
+- 🔧 仅在父进程未设该变量时，通过 `subprocess.run(env=child_env)` 把 `XUEQIU_CALL_SOURCE` 注入子进程（不在父进程 os.environ 留痕），插件侧台账靠继承到的值归因
+- 🔧 `record_opencli_call` 同步带 `source=source`，使 Python 侧台账与插件侧台账的 source 字符串一致（此前 Python 侧无 source 字段）
+
+**验证**：
+- ✅ pytest 相关用例（test_opencli_call_logger / test_source_fail_rotation / test_fetch_news_status）16 passed
+
+**关联**：关闭 TD-019；新增 B-026
+
+### v4.3.6 (2026-10-12) — opencli 调用超时抬到 120s + 子进程归因
+
+**Commit**：`85030e6`（`901fb4b` 的 amend，代码 tree 不变，仅重写 message）
+
+**修复**：
+- 🐛 opencli 各命令超时（20/60/60/90/60 秒）低于插件限速的最坏等待（≈87s），每 30 次必被 `subprocess.run` 墙钟 KILL 一次，表现为那一篇/那一只静默降级失败；实测 2026-10-12 13:03 一笔 `stock-notices` 被 60s 掐死（台账 `~/.opencli/xueqiu-calls.jsonl` 里 `timed out after 60 seconds`）
+- 🐛 子进程归因错误：本模块未把 `XUEQIU_CALL_SOURCE` 写进环境，analyzer 发起的调用在插件台账被记成 `source_kind: manual`（像人手敲的）
+
+**变更**：
+- 🔧 抽出统一常量 `OPENCLI_CALL_TIMEOUT_SECONDS = 120`，`_run` 默认值与 5 个 fetch 命令（stock/comments/news/replies/stock-notices）超时全部改用它；与 xueqiu-crawler / xueqiu-monitor 两侧取同一值（三处注释均写「改一处要一起改」）
+- 🔧 `os.environ.setdefault("XUEQIU_CALL_SOURCE", "xueqiu-analyzer:fetcher_opencli")`：monitor 预置值不被覆盖（仍记 monitor 名下），独立使用本包时落到 analyzer
+
+**验证**：
+- ✅ pytest 288 passed；无测试断言过原来的 20/60/90 秒
+- ✅ 导入即生效：`OPENCLI_CALL_TIMEOUT_SECONDS = 120`、`_run.__kwdefaults__ = {'timeout': 120}`、`XUEQIU_CALL_SOURCE` 已 setdefault
+
+**后续修正（review 提出）**：
+- 🐛 调用方标识改用模块级 `os.environ.setdefault(...)` 有进程级全局副作用（依赖 import 顺序、污染 pytest 会话、argv 兜底分支不可达）；已由 v4.3.7（`687518d`）落地：`_run` 现算 + 子进程 env 注入（TD-019 关闭）
+- 🟡 已知代价：monitor 的 opencli 预取没有 per-stock 预算覆盖，超时 120s 把这个本就无界的窗口再放大 ~210s/股（TD-020）
 
 ### v4.3.5 (2026-10-08) — 限速器与台账口径覆盖 web article
 

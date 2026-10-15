@@ -29,8 +29,8 @@
 
 JS 侧
 -----
-opencli 适配器（``xueqiu-crawler/opencli-adapters/*.js``）需要同一套模式，
-但跑在 Node 里。那份由 ``xueqiu-crawler/scripts/sync_waf_patterns.py`` 从本模块
+opencli 适配器（``opencli-adapters/*.js``）需要同一套模式，
+但跑在 Node 里。那份由 ``opencli-adapters/scripts/sync_waf_patterns.py`` 从本模块
 生成，并有漂移测试卡住两边不能各走各的。
 """
 
@@ -90,6 +90,7 @@ MIN_CONTENT_CHARS = 100
 
 
 # ── 判定 ────────────────────────────────────────────────────
+
 
 def _head(text: str) -> str:
     return (text or "")[:CONTENT_HEAD_CHARS]
@@ -179,7 +180,7 @@ def block_guard_js() -> str:
     """生成 opencli 适配器用的 BLOCK_GUARD 正则源码（不含 / 定界符）。
 
     与 :data:`CONTENT_PATTERNS` 同源 —— 由 ``sync_waf_patterns.py`` 写入
-    ``xueqiu-crawler/opencli-adapters/*.js``。
+    ``opencli-adapters/*.js``。
 
     模式含正则元字符时直接抛错：宁可同步脚本当场失败，
     也不要让一个模式悄悄变成通配符、把正常页面全判成风控。
