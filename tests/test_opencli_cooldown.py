@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -59,18 +60,13 @@ def test_unreadable_state_is_treated_as_no_cooldown(state_file, payload):
 def test_state_path_honours_env_override_and_expands_tilde(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCLI_COOLDOWN_STATE", "~/xueqiu-cooldown.json")
 
-    assert (
-        oc.cooldown_path() == __import__("pathlib").Path.home() / "xueqiu-cooldown.json"
-    )
+    assert oc.cooldown_path() == Path.home() / "xueqiu-cooldown.json"
 
 
 def test_default_path_is_the_plugin_layout(monkeypatch):
     monkeypatch.delenv("OPENCLI_COOLDOWN_STATE", raising=False)
 
-    assert (
-        oc.cooldown_path()
-        == __import__("pathlib").Path.home() / ".opencli" / "xueqiu-cooldown.json"
-    )
+    assert oc.cooldown_path() == Path.home() / ".opencli" / "xueqiu-cooldown.json"
 
 
 def test_sentinel_separates_breaker_blocks_from_real_connection_failures():
@@ -86,3 +82,29 @@ def test_sentinel_separates_breaker_blocks_from_real_connection_failures():
     assert oc.is_cooldown_failure(None, "", genuine) is False
     # stderr / error / 任意字段拼起来也要能认出来
     assert oc.is_cooldown_failure("stderr:", blocked, "exit=69") is True
+
+
+def test_plugin_kill_switches_suppress_the_cooldown(state_file, monkeypatch):
+    """插件被总刹车关掉时，不该报「冷着」。
+
+    否则消费方会平白跳过抓取（`OPENCLI_RATELIMIT_DISABLED` / `XUEQIU_OPENCLI_THROTTLE`
+    一设，插件既不限速也不熔断，而状态文件里可能还留着上一轮的 `until_ms`）。
+    """
+    state_file.write_text(json.dumps({"until_ms": time.time() * 1000 + 3600_000}))
+    monkeypatch.delenv("OPENCLI_RATELIMIT_DISABLED", raising=False)
+    monkeypatch.delenv("XUEQIU_OPENCLI_THROTTLE", raising=False)
+    assert oc.in_cooldown() is True  # 基线
+
+    monkeypatch.setenv("OPENCLI_RATELIMIT_DISABLED", "1")
+    assert oc.in_cooldown() is False
+
+    monkeypatch.delenv("OPENCLI_RATELIMIT_DISABLED")
+    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "disabled")
+    assert oc.in_cooldown() is False
+
+
+def test_non_finite_until_is_treated_as_no_cooldown(state_file):
+    """`1e309` 是合法 JSON 数字，不兜住会得到 `inf`（永不解封）。"""
+    state_file.write_text('{"until_ms": 1e309}')
+
+    assert oc.cooldown_remaining_seconds() == 0.0

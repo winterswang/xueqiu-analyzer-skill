@@ -21,13 +21,49 @@
 
 域名键默认 `xueqiu`：插件的 `CANONICAL_DOMAIN_KEY` 把 `xueqiu.com` / `www.xueqiu.com`
 / `stock.xueqiu.com` 都映射回它，`web article` 打 xueqiu.com 时也归同一个键。
+
+已知边界（**有意不覆盖**，都是 fail-open 方向）
+---------------------------------------------
+本模块只读**状态文件**与插件那两个**总刹车环境变量**，不重建插件的策略查找链：
+
+- `~/.opencli/rate-limits.json` 里的 `sites.<键>.enabled: false`（站点级禁用）或
+  `sites.<键>.cooldown.enabled: false` —— **不读**。在那种配置下插件不会拦，而这里
+  仍可能报「冷着」⇒ 调用方会平白跳过抓取。要覆盖它就得在 Python 里重建
+  `policyForCall`（domains → sites → 内置 → 通配）那条链，两份实现必然漂移，
+  所以宁可不做、把事情写在这里。
+- `sites.<键>.cooldown.state_path`（优先级**高于** `OPENCLI_COOLDOWN_STATE`）—— 同样不读。
+  有人按插件 docstring 建议用 `state_path` 做隔离验证时，本模块会读老的默认路径、
+  大概率读不到 ⇒ 返回「没有冷却」，预检静默失效（方向是 fail-open，不会误杀）。
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
+
+_PLUGIN_OFF_FOR_DISABLED = {"1", "true", "on", "yes", "enabled"}
+_PLUGIN_NEGATIVE = {"0", "false", "off", "no", "disabled"}
+
+
+def plugin_throttling_disabled() -> bool:
+    """插件侧的总刹车是否被按下 —— 设了就**既不限速也不熔断**。
+
+    对应 `lib/policy.js` 的 `applyEnv`：
+    `OPENCLI_RATELIMIT_DISABLED`（真值 = 关）与 `XUEQIU_OPENCLI_THROTTLE`（负值 = 关）。
+
+    不看这条，就会出现「状态文件里还有冷却、但插件已被关掉」时**报出假冷却** ——
+    而消费方据此平白跳过抓取，还会把原因写成「站点在拦我们」。
+    """
+    if (os.environ.get("OPENCLI_RATELIMIT_DISABLED") or "").strip().lower() in (
+        _PLUGIN_OFF_FOR_DISABLED
+    ):
+        return True
+    return (os.environ.get("XUEQIU_OPENCLI_THROTTLE") or "").strip().lower() in (
+        _PLUGIN_NEGATIVE
+    )
+
 
 # 熔断器拦下调用时用的**哨兵 profile 名**（`lib/cooldown.js` 的 BLOCK_PROFILE）。
 # 它专用于这件事：不会与「daemon 真的没连上」（同样报 BROWSER_CONNECT）混同，
@@ -65,6 +101,8 @@ def cooldown_remaining_seconds(
     """
     import time
 
+    if plugin_throttling_disabled():
+        return 0.0
     now = now_ms if now_ms is not None else time.time() * 1000
     try:
         state = json.loads(cooldown_path(site_key).read_text(encoding="utf-8"))
@@ -75,6 +113,11 @@ def cooldown_remaining_seconds(
     try:
         until = float(state.get("until_ms") or 0)
     except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(until):
+        # `1e309` 是合法 JSON 数字、`Infinity` 也能被解析出来 —— 不兜住的话剩余
+        # 时间会变成 `inf`（永不解封）。插件侧 `Number()` 有同样性质，所以这不是
+        # 口径漂移，只是别让调用方去打一份「剩余 inf 小时」的日志。
         return 0.0
     return max(0.0, (until - now) / 1000.0)
 
