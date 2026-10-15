@@ -88,12 +88,23 @@ def _is_beyond_time_window(time_str: str, days: int) -> bool:
     """
     if not time_str or days <= 0:
         return False
-    cutoff = datetime.now().timestamp() - days * 86400
+    now = datetime.now()
+    cutoff = now.timestamp() - days * 86400
     for fmt in ['%m-%d %H:%M', '%m-%d', '%Y-%m-%d', '%Y-%m-%d %H:%M']:
         try:
             dt = datetime.strptime(time_str.strip(), fmt)
             if '%Y' not in fmt:
-                dt = dt.replace(year=datetime.now().year)
+                dt = dt.replace(year=now.year)
+                # 无年份日期只能补当年，跨年后就落到"未来"：1 月 5 日看到 '12-20'
+                # 会被当成当年 12 月 20 日，于是判不出"超出窗口"，上一年 12 月的
+                # 旧帖继续被保留/处理（issue #46）。明显超前就回退一年。
+                # 留 1 天容差：站点时间与本地时钟的分钟级偏差不该被当成"去年"。
+                if (dt - now).total_seconds() > 86400:
+                    try:
+                        dt = dt.replace(year=now.year - 1)
+                    except ValueError:
+                        # 2/29 回退到非闰年时收敛到 2/28
+                        dt = dt.replace(year=now.year - 1, day=28)
             return dt.timestamp() < cutoff
         except ValueError:
             continue
