@@ -6,7 +6,7 @@ from xueqiu_analyzer import opencli_rate_limiter as limiter
 
 
 def test_limiter_can_be_disabled(monkeypatch):
-    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "off")
+    monkeypatch.delenv("XUEQIU_PY_THROTTLE", raising=False)
 
     result = limiter.acquire_opencli_slot("test")
 
@@ -19,7 +19,7 @@ def test_limiter_can_be_disabled(monkeypatch):
 
 def test_limiter_reserves_cross_process_slots(tmp_path, monkeypatch):
     state = tmp_path / "throttle.json"
-    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "on")
+    monkeypatch.setenv("XUEQIU_PY_THROTTLE", "on")
     monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE_STATE", str(state))
     monkeypatch.setenv("XUEQIU_OPENCLI_MIN_DELAY_SECONDS", "2")
     monkeypatch.setenv("XUEQIU_OPENCLI_MAX_DELAY_SECONDS", "2")
@@ -45,7 +45,7 @@ def test_limiter_reserves_cross_process_slots(tmp_path, monkeypatch):
 
 
 def test_local_browser_extract_and_help_do_not_wait(tmp_path, monkeypatch):
-    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "on")
+    monkeypatch.setenv("XUEQIU_PY_THROTTLE", "on")
     monkeypatch.setattr(limiter.time, "sleep", lambda _seconds: None)
 
     extract = limiter.acquire_opencli_slot(
@@ -69,10 +69,8 @@ def test_browser_open_is_throttled(tmp_path, monkeypatch):
     当天台账实测：130 次调用里 37 次是 browser:open，限速器只记了 17 次，
     覆盖约 13% 的流量，漏掉的恰恰是最重的页面导航。
     """
-    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "on")
-    monkeypatch.setenv(
-        "XUEQIU_OPENCLI_THROTTLE_STATE", str(tmp_path / "throttle.json")
-    )
+    monkeypatch.setenv("XUEQIU_PY_THROTTLE", "on")
+    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE_STATE", str(tmp_path / "throttle.json"))
     monkeypatch.setattr(limiter.time, "sleep", lambda _seconds: None)
 
     slot = limiter.acquire_opencli_slot(
@@ -85,24 +83,36 @@ def test_browser_open_is_throttled(tmp_path, monkeypatch):
 
 def test_should_throttle_covers_site_requests_only():
     """枚举式确认各类命令的判定，避免再出现「形态对不上、静默漏掉」。"""
-    assert limiter._should_throttle(
-        ["opencli", "browser", "s0", "open", "https://xueqiu.com/1/2"]
-    ) is True
-    assert limiter._should_throttle(
-        ["opencli", "xueqiu", "user-articles", "--user_id", "1", "-f", "json"]
-    ) is True
+    assert (
+        limiter._should_throttle(
+            ["opencli", "browser", "s0", "open", "https://xueqiu.com/1/2"]
+        )
+        is True
+    )
+    assert (
+        limiter._should_throttle(
+            ["opencli", "xueqiu", "user-articles", "--user_id", "1", "-f", "json"]
+        )
+        is True
+    )
     # 通用网页正文命令：内部 page.goto 导航真实页面（可指向雪球，也可指向
     # cninfo/hkexnews），与 browser open 同类
-    assert limiter._should_throttle(
-        ["opencli", "web", "article", "https://xueqiu.com/1/2", "-f", "json"]
-    ) is True
+    assert (
+        limiter._should_throttle(
+            ["opencli", "web", "article", "https://xueqiu.com/1/2", "-f", "json"]
+        )
+        is True
+    )
     # 本地操作：不发站点请求
     assert limiter._should_throttle(["opencli", "browser", "s0", "extract"]) is False
-    assert limiter._should_throttle(["opencli", "browser", "s0", "get", "title"]) is False
+    assert (
+        limiter._should_throttle(["opencli", "browser", "s0", "get", "title"]) is False
+    )
     assert limiter._should_throttle(["opencli", "browser", "s0", "close"]) is False
-    assert limiter._should_throttle(
-        ["opencli", "xueqiu", "user-articles", "--help"]
-    ) is False
+    assert (
+        limiter._should_throttle(["opencli", "xueqiu", "user-articles", "--help"])
+        is False
+    )
     assert limiter._should_throttle(["opencli", "web", "article", "--help"]) is False
 
 
@@ -124,14 +134,21 @@ def test_default_interval_policy_is_pinned():
     assert 0 < limiter.DEFAULT_MIN_DELAY_SECONDS < limiter.DEFAULT_MAX_DELAY_SECONDS
     # 长停是"打断匀速机器形态"的机制，不能被关掉
     assert limiter.DEFAULT_LONG_PAUSE_EVERY > 0
-    assert 0 < limiter.DEFAULT_LONG_PAUSE_MIN_SECONDS < limiter.DEFAULT_LONG_PAUSE_MAX_SECONDS
+    assert (
+        0
+        < limiter.DEFAULT_LONG_PAUSE_MIN_SECONDS
+        < limiter.DEFAULT_LONG_PAUSE_MAX_SECONDS
+    )
 
 
 def test_default_band_used_when_env_absent(tmp_path, monkeypatch):
     """不设环境变量时，预定的间隔必须落在默认 band 内。"""
-    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "on")
+    monkeypatch.setenv("XUEQIU_PY_THROTTLE", "on")
     monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE_STATE", str(tmp_path / "t.json"))
-    for name in ("XUEQIU_OPENCLI_MIN_DELAY_SECONDS", "XUEQIU_OPENCLI_MAX_DELAY_SECONDS"):
+    for name in (
+        "XUEQIU_OPENCLI_MIN_DELAY_SECONDS",
+        "XUEQIU_OPENCLI_MAX_DELAY_SECONDS",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(limiter.time, "sleep", lambda _seconds: None)
 
@@ -144,3 +161,31 @@ def test_default_band_used_when_env_absent(tmp_path, monkeypatch):
         <= slot["reserved_seconds"]
         <= limiter.DEFAULT_MAX_DELAY_SECONDS
     )
+
+
+def test_throttle_is_disabled_by_default(monkeypatch):
+    """默认必须是**关**。
+
+    这是比「间隔多少秒」更硬的决策：插件层已覆盖同一批命令，本层再开就是双重限速
+    （同一条 `next_at` 被两层各推一次，实际间隔翻倍）。此前没有任何一条测试钉住它 ——
+    把默认值改回去，测试全绿。
+    """
+    monkeypatch.delenv("XUEQIU_PY_THROTTLE", raising=False)
+    monkeypatch.delenv("XUEQIU_OPENCLI_THROTTLE", raising=False)
+
+    assert limiter.throttle_enabled() is False
+
+
+def test_escape_hatch_uses_a_variable_the_plugin_does_not_know(monkeypatch):
+    """逃生舱的变量名不能与插件层共用 —— 同一个名字两层极性相反。
+
+    `XUEQIU_OPENCLI_THROTTLE` 在插件侧是**刹车**（0/false/off/… 表示关），
+    在本模块曾是**油门**（1/true/on/… 表示开）。照旧文档设 `=1` 会同时打开两层；
+    设 `=0` 则两层都关、静默失去限速。故改用 `XUEQIU_PY_THROTTLE`。
+    """
+    monkeypatch.delenv("XUEQIU_PY_THROTTLE", raising=False)
+    monkeypatch.setenv("XUEQIU_OPENCLI_THROTTLE", "1")
+    assert limiter.throttle_enabled() is False, "旧名是插件层的开关，不该启用本层"
+
+    monkeypatch.setenv("XUEQIU_PY_THROTTLE", "1")
+    assert limiter.throttle_enabled() is True

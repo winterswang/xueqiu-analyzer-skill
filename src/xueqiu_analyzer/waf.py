@@ -30,7 +30,7 @@
 JS 侧
 -----
 opencli 适配器（``opencli-adapters/*.js``）需要同一套模式，
-但跑在 Node 里。那份由 ``xueqiu-crawler/scripts/sync_waf_patterns.py`` 从本模块
+但跑在 Node 里。那份由 ``opencli-adapters/scripts/sync_waf_patterns.py`` 从本模块
 生成，并有漂移测试卡住两边不能各走各的。
 """
 
@@ -90,6 +90,7 @@ MIN_CONTENT_CHARS = 100
 
 
 # ── 判定 ────────────────────────────────────────────────────
+
 
 def _head(text: str) -> str:
     return (text or "")[:CONTENT_HEAD_CHARS]
