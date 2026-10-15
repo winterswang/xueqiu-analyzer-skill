@@ -4,11 +4,14 @@ xueqiu-analyzer V3 — 配置加载
 优先级：环境变量 > config.yaml > openclaw.json fallback
 """
 
+import logging
 import os
 import json
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 # 自动加载项目 .env（不依赖 shell 环境），已存在的环境变量优先
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -37,6 +40,16 @@ def _load_yaml_config(path: Path = None) -> dict:
     if config_path.exists():
         with open(config_path, 'r') as f:
             return yaml.safe_load(f) or {}
+    if path is None:
+        # 默认路径缺失意味着不是仓库布局（例如 `pip install .` 装出的 wheel）——
+        # 以前这里是静默返回 {}，用户会以为在用仓库配置，其实全是内置默认值
+        # （issue #47）。出声，别让它无声漂移。
+        logger.warning(
+            "未找到 %s —— 本次运行使用**内置默认配置**。本包按仓库布局运行"
+            "（config/ 与 prompts/ 在仓库根目录、不随 wheel 发布），请用 "
+            "`pip install -e .` 或保留仓库目录。",
+            config_path,
+        )
     return {}
 
 

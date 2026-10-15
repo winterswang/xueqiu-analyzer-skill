@@ -7,10 +7,15 @@ name = "xueqiu-analyzer"
 version = "3.0.0"
 description = "雪球股票分析 Skill V3 — 自动化雪球舆情分析 + AI 深度投资报告"
 requires-python = ">=3.11"
+# 只声明**无条件导入**的运行依赖。config/ 与 prompts/ 位于仓库根目录、不随 wheel
+# 发布，因此本包只支持仓库布局（editable 安装，见 README §3.1，issue #47）。
+# 其余依赖（python-dotenv / tiktoken / edgartools / beautifulsoup4 / PyMuPDF /
+# pdfplumber / nodriver）都是惰性导入且可降级，按需自行安装 —— requirements.txt 里齐全。
 dependencies = [
     "playwright>=1.40",
     "pyyaml>=6.0",
     "click>=8.0",
+    "requests>=2.28.0",   # crawler 模块级导入：缺它 `xueqiu` 起不来（issue #47）
 ]
 
 [project.scripts]
