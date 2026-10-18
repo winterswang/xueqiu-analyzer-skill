@@ -1,11 +1,11 @@
 # 雪球股票分析 Skill — 项目跟踪日志
 
-> 最后更新：2026-10-12  
-> 版本：V4.3.7  
-> 最近一次 `LAST_ANALYZED`：`687518d`
-> 分析范围：全部历史 commit（155 个）
+> 最后更新：2026-10-15  
+> 版本：V4.3.11  
+> 最近一次 `LAST_ANALYZED`：`3101bfb`
+> 分析范围：全部历史 commit（157 个）
 
-<!-- @@LAST_ANALYZED: 687518d @@-->
+<!-- @@LAST_ANALYZED: 3101bfb @@-->
 ---
 
 ## 🏗️ 系统架构
@@ -77,9 +77,10 @@
 | 配置加载 | `config.py` | 93 | YAML + 环境变量 + openclaw.json fallback 链 |
 | 数据模型 | `models.py` | 281 | CrawlResult/EvaluationResult/FinancialData 等 dataclass |
 | CLI 入口 | `cli.py` | 251 | Click 命令行接口（analyze/crawl/evaluate/reanalyze/cookies） |
-| 风控判定 | `waf.py` | 190 | 风控页判定唯一实现：is_error_page / is_waf_blocked / classify_failure / needs_login / has_waf_marker |
-| 限速器 | `opencli_rate_limiter.py` | 151 | 跨进程随机限速：状态文件调度命令起始时间，默认间隔 6–12 秒 + 每 30 次 45–75 秒长停 |
+| 风控判定 | `waf.py` | 193 | 风控页判定唯一实现：is_error_page / is_waf_blocked / classify_failure / needs_login / has_waf_marker |
+| 限速器 | `opencli_rate_limiter.py` | 223 | 跨进程随机限速（**默认关闭**，逃生舱）：状态文件调度命令起始时间，策略常量保留供插件侧对照；2026-10-11 起限速已上移到 opencli 插件层，逃生舱变量改用 `XUEQIU_PY_THROTTLE=1`（`XUEQIU_OPENCLI_THROTTLE` 是插件层刹车，同名单层极性相反） |
 | 调用台账 | `opencli_call_logger.py` | 152 | opencli 每次调用追加 JSONL 台账（含 throttle 等待/预留时长 + expect_miss 探针标记），供峰值复盘 |
+| 熔断读取 | `opencli_cooldown.py` | 137 | 读插件层风控熔断状态 + 识别「被熔断拦下」：cooldown_remaining_seconds/in_cooldown 读 `~/.opencli/<域名键>-cooldown.json`（先看插件总刹车 `OPENCLI_RATELIMIT_DISABLED`/`XUEQIU_OPENCLI_THROTTLE`，尊重 `OPENCLI_COOLDOWN_STATE` 覆盖，until_ms 非有限值兜底），is_cooldown_failure 靠哨兵 profile 名 `__opencli_risk_cooldown__` 区分「熔断器刻意拦下」与「daemon 真连不上」（都报 BROWSER_CONNECT） |
 
 ### V2 遗留代码
 
@@ -121,7 +122,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | PyYAML | 配置文件 |
 | Click | CLI 框架 |
 | urllib | HTTP 请求 |
-| pytest | 单元测试（282 个） |
+| pytest | 单元测试（301 个） |
 | GitHub Actions | CI：push/PR/manual 触发 pytest |
 
 ---
@@ -248,6 +249,47 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 - **影响**：静默失败与插件侧并发槽泄漏（进程被 KILL → `onAfterExecute` 不触发 → 槽留到 TTL 回收）一并消除
 - **后续修正**：review 指出 `os.environ.setdefault("XUEQIU_CALL_SOURCE", ...)` 是进程级全局副作用（依赖 import 顺序、污染整个 pytest 会话、使 `default_source()` 的 argv 兜底分支永久不可达）。该方案已由 `687518d`（`7a67f3c` 的 squash，PR #42）落地（TD-019 已关闭）
 
+### ADR-014：限速能力上移到 opencli 插件层，本模块默认关闭
+
+- **时间**：2026-10-15
+- **Commit**：`9d7d4b5`
+- **背景**：2026-10-11 起限速由 opencli 插件层统一负责（`opencli-adapters/rate-limit.js` 的 `onBeforeExecute` 钩子）。那一层覆盖**所有**调用方——本包、xueqiu-crawler/monitor 脚本、FrontierAgent、以及手敲 `opencli`——因此绕不过去。本模块（`opencli_rate_limiter.py`）若仍按老默认值（非 pytest 环境默认启用）生效，就会在每个调用上再叠一层等待，形成**双重限速**（拖慢但不丢数据）
+- **决策**：`throttle_enabled()` 默认改为**关闭**——仅当 `XUEQIU_OPENCLI_THROTTLE` 显式设为 `1/true/on/enabled` 时启用；删掉原先「非 pytest 环境默认启用」分支（连同 `PYTEST_CURRENT_TEST` 特判）。本模块降级为**逃生舱**（某台机器没装插件时可用 `XUEQIU_OPENCLI_THROTTLE=1` 重新启用），策略常量 `DEFAULT_*` 与 `_should_throttle` 一并保留，供插件侧对照与回退
+- **影响**：opencli 调用不再叠加双层等待；限速策略「真值」移到插件侧（JS），本模块的 `DEFAULT_*` 常量与 `test_default_interval_policy_is_pinned`（ADR-012）锁定的是一套默认关闭的代码，锁不住插件侧实际策略（见 TD-021）
+- **顺带**：`waf.py` 注释路径随 `opencli-adapters` 从 `xueqiu-crawler` 拆出为独立目录而更新（`xueqiu-crawler/opencli-adapters/*.js` → `opencli-adapters/*.js`）
+
+### ADR-015：逃生舱变量名改用插件层不认识的 `XUEQIU_PY_THROTTLE`
+
+- **时间**：2026-10-15
+- **Commit**：`9d7d4b5`
+- **背景**：ADR-014 把本模块降级为逃生舱后，开关仍沿用 `XUEQIU_OPENCLI_THROTTLE`。但这个名字在插件层（`opencli-adapters/lib/policy.js` 的 `envFlagOff`）是**刹车**语义（`0/false/off/no/disabled` 表关闭），本模块是**油门**语义（`1/true/on/enabled` 表开启）——同一个变量名，两层极性相反。照旧文档设 `=1` 会同时打开两层（正是 ADR-014 要避免的双重限速），设 `=0` 则两层都关、静默失去限速
+- **决策**：逃生舱改用插件层不认识的名字 `XUEQIU_PY_THROTTLE`；保留 `_LEGACY_ENV = "XUEQIU_OPENCLI_THROTTLE"`，检测到旧名被设成 enable 值时发一次 `logging.warning`（「大声说」而非静默不生效）
+- **补充风险**：插件层覆盖不到 `opencli browser …` 子命令（不经钩子，上游 jackwener/opencli#2606），而 crawler/monitor 的回退路径（`opencli_extractor._attempt_via_browser`、`detail_fetcher._fetch_page_opencli_legacy`）用的正是它——「插件不在位」与「需要本层兜底」是同一件事；插件缺失/停用/discovery 失败时须设 `XUEQIU_PY_THROTTLE=1`，否则回退路径完全不受限速（2026-10-15 实测当日 0 次调用，为潜在风险而非现状）
+- **影响**：逃生舱语义单一化，杜绝同名两层极性冲突；新增 2 条测试钉住「默认关闭」与「旧名不启用本层」
+
+### ADR-016：熔断状态读取 + 「被熔断拦下」识别收为唯一实现（opencli_cooldown.py）
+
+- **时间**：2026-10-15
+- **Commit**：`3101bfb`
+- **背景**：插件层熔断器（`opencli-adapters/lib/cooldown.js`）已上线并默认启用，命中风控后把 `OPENCLI_PROFILE` 指向哨兵 profile，让该站点在冷却期内所有调用于 routing 阶段硬失败（`BROWSER_CONNECT`/exitCode 69）。但调用方（crawler/monitor）不知道这是「刻意拦下」——照原样重试 3 轮（每轮白等约 45 秒 daemon 超时），更糟的是 monitor/crawler 会因此判定「opencli 无数据」而回退到 Playwright/nodriver 直连，那条路径不在插件管辖内、不限速，等于站点被打时继续打它，熔断器形同虚设
+- **决策**：把调用方需要的两个判断收在一个模块（唯一实现，供 crawler/monitor 共用）：
+  - `cooldown_remaining_seconds()`/`in_cooldown()`：读 `~/.opencli/<域名键>-cooldown.json`（与插件 `cooldownPathFor` 同口径，尊重 `OPENCLI_COOLDOWN_STATE` 覆盖）；读不出来/状态损坏一律当「没有冷却」——与插件 `readState` 同一条纪律：绝不能因为读不了状态就拦住正常调用
+  - `is_cooldown_failure(*parts)`：靠哨兵 profile 名 `__opencli_risk_cooldown__`（`lib/cooldown.js` 的 BLOCK_PROFILE）区分「熔断器刻意拦下」与「daemon 真没连上」——两者都报 `BROWSER_CONNECT`，但处置相反（前者别重试、别回退直连）
+- **替代方案**：不抽 helper、由 crawler/monitor 各自读状态文件并识别哨兵——会重蹈风控页判定散落 3 仓库 8 处的覆辙（ADR-011/B-018），故收为唯一实现
+- **影响**：新增 94 行模块 + 11 条测试；判断逻辑就绪但尚未接线到 crawler/monitor 的回退决策点（TD-023/TODO-009），后续两个 PR 落地
+
+### ADR-017：熔断 helper 刻意不重建插件的策略查找链（fail-open 边界）
+
+- **时间**：2026-10-15
+- **Commit**：`3101bfb`
+- **背景**：ADR-016 的独立 review 抓到一条真实可达的误报：`cooldown_remaining_seconds()` 只看状态文件、不看插件的「已禁用」判定，于是「冷却文件里 `until_ms` 还在未来 + 插件被总刹车关掉」时会报出**假冷却**——消费方据此平白跳过抓取，还把原因写成「站点在拦我们」。修复时又浮现两条同类边界，都指向「要不要在 Python 里重建插件的策略查找链」
+- **决策**：
+  - 新增 `plugin_throttling_disabled()`，对应插件 `lib/policy.js` 的 `applyEnv`：`OPENCLI_RATELIMIT_DISABLED`（真值 = 关）与 `XUEQIU_OPENCLI_THROTTLE`（负值 = 关）；命中则 `cooldown_remaining_seconds()` 直接返回 0（不报假冷却）
+  - `until_ms` 做 `math.isfinite` 兜底：`1e309` 是合法 JSON 数字，不兜住会得到 `inf`（永不解封）；插件侧 `Number()` 同性质，故非口径漂移，只是别让调用方打出「剩余 inf 小时」
+  - **刻意不覆盖**两条边界（写进模块头）：`rate-limits.json` 的 `sites.<键>.enabled: false`/`cooldown.enabled: false`，以及 `cooldown.state_path`（优先级高于 `OPENCLI_COOLDOWN_STATE`）
+- **替代方案**：在 Python 里重建 `policyForCall`（domains → sites → 内置 → 通配）那条链以覆盖上述边界——被否决，因为两份实现必然漂移（与 ADR-011 waf 模式表、ADR-013 超时值同步同类风险），且两条边界都是 fail-open 方向（最坏是「预检静默失效」或「多等一轮」而非误杀）
+- **影响**：`opencli_cooldown.py` 94 → 137 行；新增 2 条测试（总刹车抑制冷却、非有限 until_ms 当没有冷却），共 13 条；登记 TD-024
+
 ---
 
 ## 🚀 功能特性
@@ -275,6 +317,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | F-019 | opencli 随机限速 | ✅ 完成 | V4.3 | 跨进程随机限速：状态文件调度命令起始时间，默认间隔 6–12 秒 + 每 30 次 45–75 秒长停 |
 | F-020 | 台账「预期未命中」标记 | ✅ 完成 | V4.3 | record_opencli_call 支持 expect_miss，把探针序列与真失败分开，避免假警报淹掉真失败；调用方已接线（monitor 34c7fac） |
 | F-021 | opencli 调用方归因 | ✅ 完成 | V4.3.7 | `XUEQIU_CALL_SOURCE` 让子进程继承发起方标识：`_run` 现算 source（环境变量已设则用、否则用 `DEFAULT_CALL_SOURCE`）并注入子进程 env，Python 侧与插件侧两份台账 source 一致（独立使用记 analyzer、monitor 调用仍记 monitor）；V4.3.7 起不再在 import 期改 os.environ |
+| F-022 | 熔断状态读取 + 被熔断拦下识别 | ✅ 完成 | V4.3.10 | `opencli_cooldown.py`：cooldown_remaining_seconds/in_cooldown 读 `~/.opencli/<域名键>-cooldown.json`（尊重 `OPENCLI_COOLDOWN_STATE`），is_cooldown_failure 靠哨兵 profile 名区分「熔断器刻意拦下」与「daemon 真连不上」；供 crawler/monitor 共用（接线见后续 PR） |
 
 ### 版本演进
 
@@ -291,6 +334,9 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | V3.0.1 | 2026-05-25 | 代码审查清理：未使用 import、空 f-string、异常日志、max_tokens 修复 |
 | V4.2.0 | 2026-10-01 | 风控页判定收为唯一实现 waf.py + 39 条回归测试 |
 | V4.3.0 | 2026-10-04 | opencli 调用台账 + 跨进程随机限速（默认间隔 6–12 秒） |
+| V4.3.9 | 2026-10-15 | 逃生舱变量改名 `XUEQIU_PY_THROTTLE`（避免与插件层同名极性冲突） |
+| V4.3.10 | 2026-10-15 | 熔断状态读取 + 被熔断拦下识别共享 helper（opencli_cooldown.py） |
+| V4.3.11 | 2026-10-15 | 熔断 helper 补插件总刹车判断 + isfinite 兜底 + 写明两处已知边界（fail-open） |
 
 ---
 
@@ -324,6 +370,9 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | B-024 | `web article` 绕过限速 + 台账 operation 记成 "web" | `_should_throttle` 只认 `xueqiu <子命令>` 与 `browser open`，`web` 落到默认 False；而 `web article` 承接原 browser open/get/extract 三连的正文抓取，func 内自己 page.goto 导航真实页面，漏限速=正文抓取限速整个被拿掉（比 B-022 更严重）；`_operation` 对 `web` 未覆盖落到 `return args[0]` 得 "web"，站点口径按 operation 分类时主通道请求全部漏出峰值监控 | ✅ 已修复 | `8a98af3` | 限速器补 `web` 分支按动词匹配 article（--help 本地探测不限）；台账 `_operation` 取子命令名 + `_target` 记 URL；新增 test_web_article_logs_command_name_as_operation 钉住取名 |
 | B-025 | opencli 调用每 30 次被 KILL 一次（静默降级失败） | 各命令超时 20/60/60/90/60 秒低于插件限速的最坏等待（≈87s = 取锁 2s + 长停 75s + 一次执行），被 `subprocess.run` 墙钟一并计时 | ✅ 已修复 | `85030e6` | 超时统一抬到 120s（`OPENCLI_CALL_TIMEOUT_SECONDS`）；顺带消除插件侧并发槽泄漏（进程被 KILL → onAfterExecute 不触发 → 槽留到 TTL 回收） |
 | B-026 | 调用方归因依赖 import 顺序（误记成 analyzer） | v4.3.6 用 `os.environ.setdefault("XUEQIU_CALL_SOURCE", ...)` 在 import 期改进程级环境变量——谁先 import `fetcher_opencli`，同一进程里别的组件的调用就被误记成 analyzer（review 指出）；import 期改 os.environ 是进程级全局副作用 | ✅ 已修复 | `687518d` | 移除 import 期 setdefault，改为 `_run` 现算 source 并经 `subprocess.run(env=...)` 注入子进程；`record_opencli_call` 同步带 source，两份台账字符串一致 |
+| B-027 | opencli 调用双重限速（每次多叠一层等待） | 限速能力 2026-10-11 已上移到插件层（`opencli-adapters/rate-limit.js` 的 onBeforeExecute，覆盖所有调用方），但本模块 `throttle_enabled()` 仍按老默认值（非 pytest 环境）启用，每个调用在本模块与插件层各等一轮 | ✅ 已修复 | `9d7d4b5` | `throttle_enabled()` 默认改关闭（仅 `XUEQIU_OPENCLI_THROTTLE=1/true/on/enabled` 显式启用）；本模块降级为逃生舱 |
+| B-028 | 逃生舱变量名与插件层极性相反：照文档设 `=1` 双重限速、设 `=0` 静默失去限速 | `XUEQIU_OPENCLI_THROTTLE` 在插件层（`policy.js` 的 `envFlagOff`）是刹车（0/false/off 表关），本模块是油门（1/true/on 表开）——同名单层极性相反 | ✅ 已修复 | `9d7d4b5` | 逃生舱改名 `XUEQIU_PY_THROTTLE`；旧名设 enable 值时发 warning 提示；新增 2 条测试钉住默认关闭 + 旧名不启用本层 |
+| B-029 | 假冷却误报：冷却文件 `until_ms` 还在未来 + 插件被总刹车关掉时仍报「冷着」，消费方平白跳过抓取并把原因写成「站点在拦我们」 | `cooldown_remaining_seconds()` 只看状态文件、不看插件「已禁用」判定；`until_ms` 无 isfinite 兜底，`1e309` 这类合法 JSON 数字会得到 `inf`（永不解封） | ✅ 已修复 | `3101bfb` | 新增 `plugin_throttling_disabled()`（对应 `policy.js` 的 applyEnv，命中总刹车返回 0）；`until_ms` 做 `math.isfinite` 兜底；新增 2 条测试（总刹车抑制冷却、非有限 until_ms 当没有冷却） |
 
 ---
 
@@ -350,6 +399,10 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TD-018 | expect_miss 未接线 | `record_opencli_call` 的 `expect_miss` 参数与 2 个测试已就绪，但生产调用方（`detail_fetcher.fetch_page_opencli` 探针序列）未传 `expect_miss=True`，台账假警报能力到位但尚未生效 | P1 | ✅ 已解决（monitor `34c7fac`） | 可观测性 |
 | TD-019 | 调用方标识进程级全局副作用 | `85030e6` 用模块级 `os.environ.setdefault("XUEQIU_CALL_SOURCE", ...)` 注入调用方标识 —— 依赖 import 顺序（谁先 import 本模块，同进程内别的组件调用就被误记成 analyzer），污染整个 pytest 会话，使 `opencli_call_logger.default_source()` 的 argv 兜底分支永久不可达 | P1 | ✅ 已解决（`687518d`） | 归因正确性 |
 | TD-020 | monitor opencli 预取无 per-stock 预算 | 超时抬到 120s 后，monitor 的 opencli 预取（news 60→120、replies 5×90→5×120）窗口被再放大 ~210s/股；`timeout_seconds` 只包住 Playwright 回退，opencli 预取本就无界 | P1 | 🔴 未解决 | 稳定性/超时预算 |
+| TD-021 | 限速策略双实现漂移 | `9d7d4b5` 起限速真值在插件侧（`opencli-adapters/rate-limit.js`），本模块 `opencli_rate_limiter.py` 的 `DEFAULT_*` 策略常量降级为「对照/逃生舱」但默认关闭——`test_default_interval_policy_is_pinned`（ADR-012）锁的是一套不生效的代码，锁不住插件侧 JS 的实际间隔/长停；两套策略无漂移检测（同类于 ADR-011 的 waf 模式表、ADR-013 的超时值同步） | P2 | 🔴 未解决 | 限速一致性 |
+| TD-022 | 插件层覆盖不到 browser 回退路径 | 插件层限速（onBeforeExecute 钩子）覆盖不到 `opencli browser …` 子命令（jackwener/opencli#2606），而 crawler/monitor 的回退路径（`_attempt_via_browser` / `_fetch_page_opencli_legacy`）走 browser；插件缺失/停用/discovery 失败时该路径不受限速，除非显式设 `XUEQIU_PY_THROTTLE=1`（2026-10-15 实测当日 0 次调用，潜在风险） | P2 | 🔴 未解决 | 限速一致性 |
+| TD-023 | 熔断判断 helper 未接线 | `opencli_cooldown.py` 的判断能力（in_cooldown/is_cooldown_failure）已就绪并有 11 条测试，但 crawler/monitor 的回退决策点尚未接线——被熔断拦下仍会重试 3 轮并回退到不限速的直连路径（继续打站点）；commit message 明示后续两个 PR 落地 | P1 | 🔴 未解决 | 稳定性/风控 |
+| TD-024 | 熔断 helper 刻意不覆盖插件两条配置边界（fail-open） | `cooldown_remaining_seconds()` 不读 `rate-limits.json` 的 `sites.<键>.enabled: false`/`cooldown.enabled: false`，也不读 `cooldown.state_path`（优先级高于 `OPENCLI_COOLDOWN_STATE`）——两条边界下插件不拦而这里可能报「冷着」或读错路径；要覆盖须在 Python 重建 `policyForCall` 链，双实现必然漂移，宁可不做（3101bfb 已写进模块头） | P2 | 🔴 未解决 | 限速/熔断一致性 |
 
 ---
 
@@ -365,6 +418,7 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 | TODO-006 | 增加 financial_fetcher fallback 测试 | P1 | 测试覆盖缺口 |
 | TODO-007 | 检查 `_refresh_cookies()` 中 `subprocess.check_output` 路径硬编码 | P2 | 稳定性 |
 | TODO-008 | 给 monitor 的 opencli 预取补 per-stock 预算覆盖 | P1 | TD-020 |
+| TODO-009 | 把 opencli_cooldown 判断接入 crawler/monitor 回退决策点（被熔断拦下 → 别重试、别回退直连） | P1 | TD-023 |
 
 ---
 
@@ -401,6 +455,78 @@ financial-sdk ──CLI──▶ 毛利率/净利率/增速/ROIC
 ---
 
 ## 🔄 版本记录
+
+### v4.3.11 (2026-10-15) — 熔断 helper 补总刹车判断 + isfinite 兜底 + 写明两处已知边界
+
+- **Commit**：`3101bfb`（PR #49 squash 落地，与 v4.3.10 同批）
+
+**修复**：
+- 🐛 假冷却误报：`cooldown_remaining_seconds()` 只看状态文件、不看插件的「已禁用」判定——「冷却文件 `until_ms` 还在未来 + 插件被总刹车关掉」时报出假冷却，消费方据此平白跳过抓取并把原因写成「站点在拦我们」（B-029）
+- 🐛 `until_ms` 无 isfinite 兜底：`1e309` 是合法 JSON 数字、`Infinity` 也能被解析出来，不兜住会得到 `inf`（永不解封，日志还打出「剩余 inf 小时」）
+
+**变更**：
+- ✨ 新增 `plugin_throttling_disabled()`，对应插件 `lib/policy.js` 的 `applyEnv`：`OPENCLI_RATELIMIT_DISABLED`（真值 = 关）与 `XUEQIU_OPENCLI_THROTTLE`（负值 = 关）；命中则 `cooldown_remaining_seconds()` 直接返回 0
+- 🔧 `until_ms` 做 `math.isfinite` 兜底：非有限值当「没有冷却」返回 0.0（插件侧 `Number()` 同性质，非口径漂移）
+- 📚 模块头补记两条**有意不覆盖**的边界（fail-open 方向，不重建插件策略查找链）：`rate-limits.json` 的 `sites.<键>.enabled: false`/`cooldown.enabled: false`，以及 `cooldown.state_path`（优先级高于 `OPENCLI_COOLDOWN_STATE`）——要覆盖就得在 Python 里重建 `policyForCall` 链，两份实现必然漂移，宁可不做
+- 🧪 测试去掉 `__import__("pathlib").Path` 绕路写法，改用顶层 `from pathlib import Path`；新增 2 条测试（总刹车抑制冷却、非有限 until_ms 当没有冷却），挖掉判断可让其中 1 条变红
+
+**验证**：
+- ✅ pytest tests/ -q 全绿；`tests/test_opencli_cooldown.py` 13 passed（原 11 条 + 新增 2 条）
+
+**关联**：新增 ADR-017 / B-029 / TD-024；`opencli_cooldown.py` 94 → 137 行
+
+### v4.3.10 (2026-10-15) — 熔断状态读取 + 被熔断拦下识别的共享 helper
+
+- **Commit**：`3101bfb`（PR #49 squash 落地，与 v4.3.11 同批）
+
+**变更**：
+- ✨ 新增 `opencli_cooldown.py`（94 行）——调用方读取插件层风控熔断状态 + 识别「被熔断拦下」的唯一实现，供 crawler/monitor 共用：
+  - `cooldown_remaining_seconds()`/`in_cooldown()`：读 `~/.opencli/<域名键>-cooldown.json`（与插件 `cooldownPathFor` 同口径，尊重 `OPENCLI_COOLDOWN_STATE` 覆盖、支持 `~` 展开）；**0 秒**的检查，读不出来/状态损坏一律当「没有冷却」（与插件 `readState` 同一条纪律）
+  - `is_cooldown_failure(*parts)`：靠哨兵 profile 名 `__opencli_risk_cooldown__`（`lib/cooldown.js` 的 BLOCK_PROFILE）把「熔断器刻意拦下」与「daemon 真没连上」分开——两者都报 `BROWSER_CONNECT`，但处置相反（前者别重试、别回退直连）
+- 🧪 新增 `tests/test_opencli_cooldown.py`（11 条）：无状态文件/已过期=无冷却、未来 until=冷却中、状态损坏（空文件/非法 JSON/列表/类型不对/null）一律不当冷却、env 覆盖 + `~` 展开、默认路径与插件同布局、哨兵正反例（含跨字段拼接识别）
+
+**动机**：插件层熔断器（`opencli-adapters/lib/cooldown.js`）已上线并默认启用，但调用方那层没做——命中风控后调用在 routing 阶段硬失败（`BROWSER_CONNECT`/exitCode 69），调用方不知是刻意拦下而重试 3 轮（每轮白等约 45 秒），更糟的是 monitor/crawler 会判定「opencli 无数据」而回退到 Playwright/nodriver 直连（那条路径不限速、不在插件管辖内），等于站点被打时继续打它，熔断器形同虚设
+
+**验证**：
+- ✅ pytest 301 collected（新增 11 条熔断用例）
+
+**关联**：新增 ADR-016 / F-022 / TD-023 / TODO-009；接线落地见后续两个 PR
+
+### v4.3.9 (2026-10-15) — 逃生舱变量名改用插件层不认识的名字
+
+- **Commit**：`9d7d4b5`（PR #48 squash 落地，与 v4.3.8 同批）
+
+**修复**：
+- 🐛 逃生舱变量名与插件层极性相反：`XUEQIU_OPENCLI_THROTTLE` 在插件层（`opencli-adapters/lib/policy.js` 的 `envFlagOff`）是**刹车**（0/false/off/no/disabled 表关闭），在本模块却是**油门**（1/true/on/enabled 表开启）。照旧文档设 `=1` 会同时打开两层（双重限速），设 `=0` 则两层都关、静默失去限速（B-028）
+
+**变更**：
+- 🔧 逃生舱变量改名 `XUEQIU_OPENCLI_THROTTLE` → `XUEQIU_PY_THROTTLE`（插件层不认识的新名，避免同名两层极性冲突）
+- 🔧 保留 `_LEGACY_ENV = "XUEQIU_OPENCLI_THROTTLE"`，检测到旧名被设为 enable 值时发一次 `logging.warning`，明确提示「旧名是插件层开关、不会启用本层、要启用本层请设 `XUEQIU_PY_THROTTLE=1`」——大声说而非静默不生效
+- 📚 文档字符串补记：插件层覆盖不到 `opencli browser …` 子命令（jackwener/opencli#2606），crawler/monitor 的回退路径（`_attempt_via_browser` / `_fetch_page_opencli_legacy`）走的就是它；插件缺失/停用/discovery 失败时须设 `XUEQIU_PY_THROTTLE=1`，否则该回退路径完全不受限速（2026-10-15 实测当日 0 次调用，为潜在风险而非现状）
+- 📚 `waf.py` 注释路径 `xueqiu-crawler/scripts/sync_waf_patterns.py` → `opencli-adapters/scripts/sync_waf_patterns.py`（opencli-adapters 拆出为独立目录）
+- 🧪 新增 `test_throttle_is_disabled_by_default`（钉住默认关闭）+ `test_escape_hatch_uses_a_variable_the_plugin_does_not_know`（钉住旧名不启用本层、新名启用本层）；既有测试环境变量名同步改为 `XUEQIU_PY_THROTTLE`
+
+**验证**：
+- ✅ pytest tests/test_opencli_rate_limiter.py 9 passed
+
+**关联**：新增 ADR-015 / B-028 / TD-022
+
+### v4.3.8 (2026-10-15) — 限速默认关闭，能力上移到 opencli 插件层
+
+- **Commit**：`9d7d4b5`（PR #48 squash 落地，与 v4.3.9 同批）
+
+**变更**：
+- 🔧 `opencli_rate_limiter.throttle_enabled()` 默认改为**关闭**：仅 `XUEQIU_OPENCLI_THROTTLE` 显式设为 `1/true/on/enabled` 时启用，删除「非 pytest 环境默认启用」分支与 `PYTEST_CURRENT_TEST` 特判
+- 🏗️ 限速能力上移到 opencli 插件层（`opencli-adapters/rate-limit.js` 的 `onBeforeExecute` 钩子，覆盖所有调用方）；本模块降级为逃生舱，`DEFAULT_*` 策略常量与 `_should_throttle` 保留供插件侧对照与回退（ADR-014）
+- 📚 `waf.py` 注释路径随 `opencli-adapters` 从 `xueqiu-crawler` 拆出而更新
+
+**修复**：
+- 🐛 双重限速：本模块限速与插件层限速叠加，每次 opencli 调用多叠一层等待（B-027）
+
+**验证**：
+- ✅ pytest 288 passed
+
+**关联**：新增 ADR-014 / B-027 / TD-021
 
 ### v4.3.7 (2026-10-12) — 调用方标识改为运行时注入子进程 env
 
