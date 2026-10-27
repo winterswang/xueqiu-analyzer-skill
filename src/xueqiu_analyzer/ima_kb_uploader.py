@@ -32,11 +32,21 @@ _HOME = Path.home()
 _IMA_CONFIG_DIR = _HOME / ".config" / "ima"
 _CTX = ssl.create_default_context()
 
-COS_UPLOAD_SCRIPT = os.environ.get(
-    "COS_UPLOAD_SCRIPT",
+# 2026-10-27: 旧写死路径指向已不存在的 ~/.openclaw 服务器布局, 本机
+# (Mac) 上每次上传都在 create_media 之后的 COS 步骤才炸 (2026-10-27
+# 皇冠新材/微亿智造/东山精密三份招股书实测)。改成候选列表按序探测,
+# env 显式指定仍最优先。
+_COS_UPLOAD_CANDIDATES = [
+    os.environ.get("COS_UPLOAD_SCRIPT"),
     str(_HOME / ".openclaw" / "workspace" / "skills" / "ima" /
         "knowledge-base" / "scripts" / "cos-upload.cjs"),
-)
+    str(_HOME / "code" / "claude_code" / "my-agent-skills" / "ima" /
+        "knowledge-base" / "scripts" / "cos-upload.cjs"),
+    str(_HOME / ".claude" / "skills" / "ima-skill" /
+        "knowledge-base" / "scripts" / "cos-upload.cjs"),
+]
+COS_UPLOAD_SCRIPT = next(
+    (p for p in _COS_UPLOAD_CANDIDATES if p and os.path.exists(p)), "")
 
 # 文件大小限制 (media_type=5: Excel/CSV → 10 MB)
 MAX_CSV_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -240,10 +250,11 @@ def upload_file(
     cos = data["cos_credential"]
 
     # Step 3: COS 上传 (via node.js script)
-    if not os.path.exists(COS_UPLOAD_SCRIPT):
+    if not COS_UPLOAD_SCRIPT:
         raise RuntimeError(
-            f"COS 上传脚本未找到: {COS_UPLOAD_SCRIPT}\n"
-            f"请安装 ima-skills 或设置 COS_UPLOAD_SCRIPT 环境变量"
+            "COS 上传脚本未找到 (候选: "
+            + ", ".join(c for c in _COS_UPLOAD_CANDIDATES if c)
+            + ")\n请安装 ima-skills 或设置 COS_UPLOAD_SCRIPT 环境变量"
         )
 
     proc = subprocess.Popen(
