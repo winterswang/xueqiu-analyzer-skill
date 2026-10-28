@@ -96,6 +96,25 @@ def record_source_failure(source, target, rc, err):
     return rec
 
 
+def record_source_recovery(source, target):
+    # 与 record_source_failure 配对：某源重试成功时补一条恢复记录，
+    # monitor 的 health_check 据此把「瞬时失败、已自愈」与「整源挂掉」区分开
+    # （2026-10-26: comments 01138 首拉超时、30s 重试成功，旧口径照样红卡）。
+    from datetime import datetime
+    rec = {'ts': datetime.now().isoformat(timespec='seconds'), 'source': source,
+           'target': str(target), 'event': 'recovered'}
+    try:
+        d = os.path.dirname(FAIL_LOG)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        _rotate_fail_log(FAIL_LOG)
+        with io.open(FAIL_LOG, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + chr(10))
+    except Exception:
+        pass
+    return rec
+
+
 # ════════════════════════════════════════════════════════
 # Availability check (call once at init)
 # ════════════════════════════════════════════════════════
